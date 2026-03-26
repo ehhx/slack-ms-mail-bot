@@ -4,10 +4,6 @@ import { runMaintenance } from "./mail/service.ts";
 
 await getConfigAsync();
 
-addEventListener("fetch", (event) => {
-  event.respondWith(handleRequest(event.request, event));
-});
-
 const maybeCron = (Deno as typeof Deno & {
   cron?: (name: string, schedule: string, callback: () => void | Promise<void>) => void;
 }).cron;
@@ -17,3 +13,5 @@ if (typeof maybeCron === "function") {
     await runMaintenance();
   });
 }
+
+Deno.serve((request, info) => handleRequest(request, info));
