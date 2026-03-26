@@ -29,19 +29,38 @@ export async function handleSlackCommands(
     case "help":
       return jsonResponse(slackEphemeral("Slack Outlook 邮件机器人", buildHelpBlocks()));
     case "connect": {
-      const { authorizeUrl, providerType } = await createConnectUrl({
-        teamId: slash.team_id,
-        userId: slash.user_id,
-        channelId: slash.channel_id,
-        channelName: slash.channel_name,
-        providerType: cmd.providerType,
-      });
-      return jsonResponse(
-        slackEphemeral(
-          `点击按钮完成 Outlook 授权（provider：${providerLabel(providerType)}）`,
-          buildConnectBlocks(authorizeUrl, providerLabel(providerType)),
-        ),
-      );
+      runBackground(ctx, (async () => {
+        try {
+          const { authorizeUrl, providerType } = await createConnectUrl({
+            teamId: slash.team_id,
+            userId: slash.user_id,
+            channelId: slash.channel_id,
+            channelName: slash.channel_name,
+            providerType: cmd.providerType,
+          });
+          await postToResponseUrl(
+            slash.response_url,
+            {
+              ...slackEphemeral(
+                `点击按钮完成 Outlook 授权（provider：${providerLabel(providerType)}）`,
+                buildConnectBlocks(authorizeUrl, providerLabel(providerType)),
+              ),
+              replace_original: true,
+            },
+          );
+        } catch (error) {
+          await postToResponseUrl(
+            slash.response_url,
+            {
+              ...slackEphemeral(
+                `❌ 生成授权链接失败：${error instanceof Error ? error.message : String(error)}`,
+              ),
+              replace_original: true,
+            },
+          );
+        }
+      })());
+      return jsonResponse(slackEphemeral("正在生成 Outlook 授权链接，请稍候…"));
     }
     case "list": {
       const mailboxes = await listMailboxes(slash.team_id);
