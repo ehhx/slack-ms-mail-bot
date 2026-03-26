@@ -22,7 +22,7 @@ const config: AppConfig = {
   mailProviderDefault: "graph_native",
   msOauth2apiBaseUrl: "https://ms-oauth2api.example.com",
   msOauth2apiPassword: "password",
-  msOauth2apiMailbox: "INBOX",
+  msOauth2apiMailboxes: ["INBOX"],
 };
 
 Deno.test("fetchMsOauth2ApiMessages maps response and sorts by received time", async () => {
@@ -52,6 +52,8 @@ Deno.test("fetchMsOauth2ApiMessages maps response and sorts by received time", a
   assertEquals(messages[1].subject, "Later");
   assertEquals(Boolean(messages[0].messageId), true);
   assertEquals(messages[0].messageId === messages[1].messageId, false);
+  assertEquals(messages[0].folderName, "Inbox");
+  assertEquals(messages[0].folderKind, "inbox");
 });
 
 Deno.test("fetchMsOauth2ApiMessages throws typed error on http failure", async () => {

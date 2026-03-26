@@ -1,6 +1,6 @@
 # Slack Outlook Mail Bot (Deno Deploy)
 
-一个部署在 **Deno Deploy** 的 Slack 机器人：连接多个 Outlook / Microsoft 365 账号，把这些账号 Inbox 的新邮件推送到 Slack 指定频道。
+一个部署在 **Deno Deploy** 的 Slack 机器人：连接多个 Outlook / Microsoft 365 账号，把这些账号 **Inbox + Junk** 的新邮件推送到 Slack 指定频道。
 
 当前支持两种同步后端：
 
@@ -11,6 +11,7 @@
 
 - 集中托管多个 Outlook 账号
 - 每个邮箱绑定一个 Slack 频道
+- `graph_native` 模式下同时监听 **Inbox + Junk**
 - 支持 **Microsoft Graph 原生同步** 或 **msOauth2api 轮询同步**
 - 使用 Slack Slash Command 管理邮箱、路由、状态、手动同步
 - 使用 Deno KV 存储 OAuth 状态、邮箱路由、订阅 lease、delta link、去重记录
@@ -47,7 +48,7 @@
 - `MAIL_PROVIDER_DEFAULT=graph_native`
 - `MSOAUTH2API_BASE_URL=https://your-ms-oauth2api.example.com`
 - `MSOAUTH2API_PASSWORD=<optional shared password>`
-- `MSOAUTH2API_MAILBOX=INBOX`
+- `MSOAUTH2API_MAILBOX=INBOX,Junk`
 - `SLACK_API_TIMEOUT_MS=15000`
 - `GRAPH_WEBHOOK_CLIENT_STATE=<custom secret>`
 - `KV_PATH=<local kv sqlite path>`
@@ -65,7 +66,7 @@ export TOKEN_ENCRYPTION_KEY="replace-me"
 export MAIL_PROVIDER_DEFAULT="graph_native"
 export MSOAUTH2API_BASE_URL="https://your-ms-oauth2api.example.com"
 export MSOAUTH2API_PASSWORD=""
-export MSOAUTH2API_MAILBOX="INBOX"
+export MSOAUTH2API_MAILBOX="INBOX,Junk"
 ```
 
 ## Slack App 配置
@@ -143,8 +144,9 @@ export MSOAUTH2API_MAILBOX="INBOX"
 ### `graph_native`
 
 - OAuth 完成后立即建立 Graph delta 基线
-- 自动创建 Graph subscription
+- 自动创建 Graph subscription（订阅整个 mailbox 的 message created 事件）
 - 通过 `/graph/webhook` 接收变更通知
+- 实际补偿同步时分别对 **Inbox** 与 **Junk** 执行 delta query
 - 仍会由维护任务做补偿同步与续租
 
 ### `ms_oauth2api`

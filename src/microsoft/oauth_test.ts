@@ -22,7 +22,7 @@ const config: AppConfig = {
   mailProviderDefault: "graph_native",
   msOauth2apiBaseUrl: null,
   msOauth2apiPassword: null,
-  msOauth2apiMailbox: "INBOX",
+  msOauth2apiMailboxes: ["INBOX"],
 };
 
 Deno.test("buildMicrosoftAuthorizeUrl includes OAuth params", () => {

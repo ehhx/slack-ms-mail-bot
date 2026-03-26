@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config.ts";
-import type { MailMessageSummary } from "../mail/types.ts";
+import type { MailFolderKind, MailMessageSummary } from "../mail/types.ts";
 
 interface MsOauth2ApiMailRecord {
   send?: string;
@@ -46,6 +46,7 @@ async function stableMessageId(record: MsOauth2ApiMailRecord): Promise<string> {
 function toMessageSummary(
   record: MsOauth2ApiMailRecord,
   messageId: string,
+  folder: { kind: MailFolderKind; name: string },
 ): MailMessageSummary {
   return {
     messageId,
@@ -53,13 +54,16 @@ function toMessageSummary(
     fromAddress: record.send?.trim() || undefined,
     bodyPreview: record.text ?? record.html ?? undefined,
     receivedDateTime: normalizeRecordDate(record.date),
+    folderKind: folder.kind,
+    folderName: folder.name,
   };
 }
 
-export async function fetchMsOauth2ApiMessages(input: {
+async function fetchMsOauth2ApiMailboxMessages(input: {
   config: AppConfig;
   refreshToken: string;
   emailAddress: string;
+  mailbox: "INBOX" | "Junk";
   fetchImpl?: typeof fetch;
 }): Promise<MailMessageSummary[]> {
   const baseUrl = input.config.msOauth2apiBaseUrl;
@@ -71,7 +75,7 @@ export async function fetchMsOauth2ApiMessages(input: {
   url.searchParams.set("refresh_token", input.refreshToken);
   url.searchParams.set("client_id", input.config.microsoftClientId);
   url.searchParams.set("email", input.emailAddress);
-  url.searchParams.set("mailbox", input.config.msOauth2apiMailbox);
+  url.searchParams.set("mailbox", input.mailbox);
   if (input.config.msOauth2apiPassword) {
     url.searchParams.set("password", input.config.msOauth2apiPassword);
   }
@@ -93,11 +97,33 @@ export async function fetchMsOauth2ApiMessages(input: {
   const parsed = raw ? JSON.parse(raw) : [];
   const records = Array.isArray(parsed) ? parsed as MsOauth2ApiMailRecord[] : [];
   const messages: MailMessageSummary[] = [];
+  const folder = input.mailbox === "Junk"
+    ? { kind: "junk" as const, name: "Junk" }
+    : { kind: "inbox" as const, name: "Inbox" };
   for (const record of records) {
     const messageId = await stableMessageId(record);
-    messages.push(toMessageSummary(record, messageId));
+    messages.push(toMessageSummary(record, messageId, folder));
   }
 
   messages.sort((a, b) => (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? ""));
   return messages;
+}
+
+export async function fetchMsOauth2ApiMessages(input: {
+  config: AppConfig;
+  refreshToken: string;
+  emailAddress: string;
+  fetchImpl?: typeof fetch;
+}): Promise<MailMessageSummary[]> {
+  const chunks = await Promise.all(
+    input.config.msOauth2apiMailboxes.map((mailbox) =>
+      fetchMsOauth2ApiMailboxMessages({
+        ...input,
+        mailbox,
+      })
+    ),
+  );
+  return chunks
+    .flat()
+    .sort((a, b) => (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? ""));
 }

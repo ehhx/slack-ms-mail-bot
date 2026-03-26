@@ -20,6 +20,7 @@ function sampleBundle(): MailboxBundle {
       emailAddress: "mailbox@example.com",
       displayName: "Mailbox",
       inboxFolderId: "inbox-1",
+      junkFolderId: "junk-1",
       encryptedRefreshToken: "encrypted",
       accessTokenExpiresAt: new Date().toISOString(),
       providerType: "graph_native",
@@ -35,12 +36,27 @@ function sampleBundle(): MailboxBundle {
     syncState: {
       mailboxId: "mailbox-1",
       deltaLink: "delta-1",
+      lastMessageReceivedAt: new Date().toISOString(),
+      folderStates: {
+        inbox: {
+          folderId: "inbox-1",
+          folderName: "Inbox",
+          deltaLink: "delta-1",
+          lastMessageReceivedAt: new Date().toISOString(),
+        },
+        junk: {
+          folderId: "junk-1",
+          folderName: "Junk",
+          deltaLink: "delta-junk-1",
+          lastMessageReceivedAt: new Date().toISOString(),
+        },
+      },
       lastSyncAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
     lease: {
       mailboxId: "mailbox-1",
-      resource: "/me/mailFolders/inbox/messages",
+      resource: "/me/messages",
       clientState: "client-state",
       subscriptionId: "sub-1",
       expiresAt: new Date(Date.now() + 3600_000).toISOString(),

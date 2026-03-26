@@ -1,7 +1,12 @@
 import { assertEquals } from "@std/assert";
 import { clearConfigCache } from "../config.ts";
 import { setKvForTesting } from "../store/kv.ts";
-import { getOAuthState, listSyncJobs, saveMailboxBundle } from "../store/mailbox.ts";
+import {
+  getMailboxBundle,
+  getOAuthState,
+  listSyncJobs,
+  saveMailboxBundle,
+} from "../store/mailbox.ts";
 import {
   createConnectUrl,
   processGraphNotifications,
@@ -29,6 +34,7 @@ function sampleBundle(): MailboxBundle {
       emailAddress: "mailbox@example.com",
       displayName: "Mailbox",
       inboxFolderId: "inbox-1",
+      junkFolderId: "junk-1",
       encryptedRefreshToken: "encrypted",
       accessTokenExpiresAt: new Date().toISOString(),
       providerType: "graph_native",
@@ -44,12 +50,27 @@ function sampleBundle(): MailboxBundle {
     syncState: {
       mailboxId: "mailbox-1",
       deltaLink: "delta-1",
+      lastMessageReceivedAt: new Date().toISOString(),
+      folderStates: {
+        inbox: {
+          folderId: "inbox-1",
+          folderName: "Inbox",
+          deltaLink: "delta-1",
+          lastMessageReceivedAt: new Date().toISOString(),
+        },
+        junk: {
+          folderId: "junk-1",
+          folderName: "Junk",
+          deltaLink: "delta-junk-1",
+          lastMessageReceivedAt: new Date().toISOString(),
+        },
+      },
       lastSyncAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
     lease: {
       mailboxId: "mailbox-1",
-      resource: "/me/mailFolders/inbox/messages",
+      resource: "/me/messages",
       clientState: "expected-client-state",
       subscriptionId: "sub-1",
       expiresAt: new Date(Date.now() + 3600_000).toISOString(),
@@ -125,6 +146,8 @@ Deno.test("processGraphNotifications queues valid subscriptions", async () => {
   assertEquals(result.ignored, 1);
   const jobs = await listSyncJobs(kv);
   assertEquals(jobs.length, 1);
+  const refreshed = await getMailboxBundle(kv, "mailbox-1");
+  assertEquals(Boolean(refreshed?.syncState?.folderStates?.junk?.deltaLink), true);
 
   setKvForTesting(null);
   (kv as { close?: () => void }).close?.();

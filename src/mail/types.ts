@@ -1,6 +1,14 @@
 export type MailboxConnectionStatus = "active" | "needs_reauth" | "disconnected";
 export type LeaseStatus = "active" | "missing" | "degraded";
 export type MailProviderType = "graph_native" | "ms_oauth2api";
+export type MailFolderKind = "inbox" | "junk";
+
+export interface MailboxFolderSyncState {
+  folderId: string;
+  folderName: string;
+  deltaLink?: string;
+  lastMessageReceivedAt?: string;
+}
 
 export interface MailboxConnection {
   mailboxId: string;
@@ -11,6 +19,7 @@ export interface MailboxConnection {
   displayName: string;
   tenantId?: string;
   inboxFolderId?: string;
+  junkFolderId?: string;
   encryptedRefreshToken: string;
   accessTokenExpiresAt: string;
   providerType: MailProviderType;
@@ -33,6 +42,7 @@ export interface MailboxSyncState {
   lastSyncAt?: string;
   lastNotificationAt?: string;
   lastMessageReceivedAt?: string;
+  folderStates?: Partial<Record<MailFolderKind, MailboxFolderSyncState>>;
   lastError?: string;
   updatedAt: string;
 }
@@ -93,4 +103,6 @@ export interface MailMessageSummary {
   bodyPreview?: string;
   receivedDateTime?: string;
   webLink?: string;
+  folderKind?: MailFolderKind;
+  folderName?: string;
 }

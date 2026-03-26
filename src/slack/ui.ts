@@ -1,5 +1,11 @@
 import type { MailMessageSummary, MailboxBundle } from "../mail/types.ts";
-import { formatMailboxRef, mailboxStatusLine, toPreviewText } from "../mail/message.ts";
+import {
+  formatFolderLabel,
+  formatMailboxRef,
+  mailboxStatusLine,
+  monitoredFoldersText,
+  toPreviewText,
+} from "../mail/message.ts";
 
 function fmtTime(iso: string | undefined): string {
   if (!iso) return "-";
@@ -36,7 +42,7 @@ export function buildConnectBlocks(authorizeUrl: string, providerText: string): 
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `点击下面的按钮，使用 Microsoft 账号授权这个机器人访问你的 Outlook Inbox。当前将使用 *${providerText}* 作为邮件同步后端。授权成功后，默认会把该邮箱的新邮件投递到当前频道。`,
+        text: `点击下面的按钮，使用 Microsoft 账号授权这个机器人访问你的 Outlook *Inbox + Junk*。当前将使用 *${providerText}* 作为邮件同步后端。授权成功后，默认会把该邮箱的新邮件投递到当前频道。连接第二个账号时，请在 Microsoft 登录页选择 “Use another account” 或使用无痕窗口。`,
       },
       accessory: {
         type: "button",
@@ -100,7 +106,7 @@ export function buildMailboxListBlocks(bundles: MailboxBundle[]): unknown[] {
       text: {
         type: "mrkdwn",
         text:
-          `*${bundle.connection.displayName || bundle.connection.emailAddress}*\n邮箱：\`${bundle.connection.emailAddress}\`\nID：\`${formatMailboxRef(bundle.connection.mailboxId)}\`\nProvider：\`${providerLabel(bundle)}\`\n${mailboxStatusLine(bundle)}`,
+          `*${bundle.connection.displayName || bundle.connection.emailAddress}*\n邮箱：\`${bundle.connection.emailAddress}\`\nID：\`${formatMailboxRef(bundle.connection.mailboxId)}\`\nProvider：\`${providerLabel(bundle)}\`\nFolders：\`${monitoredFoldersText(bundle)}\`\n${mailboxStatusLine(bundle)}`,
       },
     });
     blocks.push({ type: "actions", elements: buildMailboxActions(bundle.connection.mailboxId) });
@@ -141,6 +147,7 @@ export function buildStatusBlocks(bundles: MailboxBundle[]): unknown[] {
         { type: "mrkdwn", text: `*Mailbox*\n${bundle.connection.emailAddress}` },
         { type: "mrkdwn", text: `*Provider*\n${providerLabel(bundle)}` },
         { type: "mrkdwn", text: `*Route*\n${bundle.route ? `<#${bundle.route.slackChannelId}>` : "未配置"}` },
+        { type: "mrkdwn", text: `*Folders*\n${monitoredFoldersText(bundle)}` },
         { type: "mrkdwn", text: `*Connection*\n${bundle.connection.status}` },
         {
           type: "mrkdwn",
@@ -176,6 +183,7 @@ export function buildMailNotificationBlocks(
 ): unknown[] {
   const preview = toPreviewText(message.bodyPreview, maxPreviewChars);
   const sender = message.fromName || message.fromAddress || "Unknown sender";
+  const folderLabel = formatFolderLabel(message.folderKind, message.folderName);
   const elements: unknown[] = [];
   if (message.webLink) {
     elements.push({
@@ -191,7 +199,7 @@ export function buildMailNotificationBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*📬 新邮件：${message.subject || "(no subject)"}*\n*发件人*：${sender}\n*邮箱*：${mailbox.connection.emailAddress}\n*Provider*：${providerLabel(mailbox)}\n*时间*：${fmtTime(message.receivedDateTime)}`,
+        text: `*📬 新邮件：${message.subject || "(no subject)"}*\n*发件人*：${sender}\n*邮箱*：${mailbox.connection.emailAddress}\n*文件夹*：${folderLabel}\n*Provider*：${providerLabel(mailbox)}\n*时间*：${fmtTime(message.receivedDateTime)}`,
       },
     },
     {

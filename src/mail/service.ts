@@ -1,6 +1,6 @@
 import { getConfigAsync, type AppConfig } from "../config.ts";
 import {
-  buildMailboxResource,
+  buildMailboxMessagesResource,
   GraphApiError,
   MicrosoftGraphClient,
 } from "../microsoft/graph.ts";
@@ -36,10 +36,12 @@ import {
   hasDeliveredRecord,
 } from "../store/mailbox.ts";
 import { decryptSecret, encryptSecret } from "./crypto.ts";
-import { buildDedupeKey, toPreviewText } from "./message.ts";
+import { buildDedupeKey, formatFolderLabel, toPreviewText } from "./message.ts";
 import type {
+  MailFolderKind,
   MailboxBundle,
   MailboxConnection,
+  MailboxFolderSyncState,
   MailboxRoute,
   MailboxSubscriptionLease,
   MailboxSyncState,
@@ -92,10 +94,191 @@ function isHistoricalMessage(
   return compared !== null ? compared < 0 : false;
 }
 
-function buildLeaseResource(connection: MailboxConnection): string {
-  return connection.inboxFolderId
-    ? buildMailboxResource(connection.inboxFolderId)
-    : "/me/mailFolders/inbox/messages";
+const GRAPH_WATCHED_FOLDERS = [
+  { kind: "inbox", folderName: "Inbox", wellKnownName: "inbox" },
+  { kind: "junk", folderName: "Junk", wellKnownName: "junkemail" },
+] as const satisfies ReadonlyArray<{
+  kind: MailFolderKind;
+  folderName: string;
+  wellKnownName: string;
+}>;
+
+interface ResolvedMailboxFolder {
+  kind: MailFolderKind;
+  folderId: string;
+  folderName: string;
+}
+
+interface GraphFolderDeltaResult extends ResolvedMailboxFolder {
+  deltaLink: string;
+  messages: MailMessageSummary[];
+}
+
+function getFolderId(connection: MailboxConnection, kind: MailFolderKind): string | undefined {
+  return kind === "junk" ? connection.junkFolderId : connection.inboxFolderId;
+}
+
+function setFolderId(
+  connection: MailboxConnection,
+  kind: MailFolderKind,
+  folderId: string,
+): MailboxConnection {
+  return kind === "junk"
+    ? { ...connection, junkFolderId: folderId }
+    : { ...connection, inboxFolderId: folderId };
+}
+
+function cloneFolderStates(
+  folderStates: MailboxSyncState["folderStates"],
+): MailboxSyncState["folderStates"] {
+  if (!folderStates) return undefined;
+  const next: Partial<Record<MailFolderKind, MailboxFolderSyncState>> = {};
+  for (const [key, value] of Object.entries(folderStates) as Array<
+    [MailFolderKind, MailboxFolderSyncState | undefined]
+  >) {
+    if (!value) continue;
+    next[key] = { ...value };
+  }
+  return next;
+}
+
+function getFolderState(
+  syncState: MailboxSyncState | null | undefined,
+  folder: ResolvedMailboxFolder,
+): MailboxFolderSyncState | undefined {
+  const current = syncState?.folderStates?.[folder.kind];
+  if (current) {
+    return {
+      ...current,
+      folderId: current.folderId || folder.folderId,
+      folderName: current.folderName || folder.folderName,
+    };
+  }
+  if (folder.kind === "inbox") {
+    return {
+      folderId: folder.folderId,
+      folderName: folder.folderName,
+      deltaLink: syncState?.deltaLink,
+      lastMessageReceivedAt: syncState?.lastMessageReceivedAt,
+    };
+  }
+  return syncState?.lastMessageReceivedAt
+    ? {
+      folderId: folder.folderId,
+      folderName: folder.folderName,
+      lastMessageReceivedAt: syncState.lastMessageReceivedAt,
+    }
+    : undefined;
+}
+
+function buildFolderStates(
+  previousSyncState: MailboxSyncState | null | undefined,
+  results: GraphFolderDeltaResult[],
+): Partial<Record<MailFolderKind, MailboxFolderSyncState>> {
+  const next = cloneFolderStates(previousSyncState?.folderStates) ?? {};
+  for (const result of results) {
+    next[result.kind] = {
+      folderId: result.folderId,
+      folderName: result.folderName,
+      deltaLink: result.deltaLink,
+      lastMessageReceivedAt: latestReceivedDate(
+        result.messages,
+        getFolderState(previousSyncState, result)?.lastMessageReceivedAt,
+      ),
+    };
+  }
+  return next;
+}
+
+function latestFolderStateDate(
+  folderStates: Partial<Record<MailFolderKind, MailboxFolderSyncState>> | undefined,
+  fallback?: string,
+): string | undefined {
+  let latest = fallback;
+  for (const state of Object.values(folderStates ?? {})) {
+    if (!state?.lastMessageReceivedAt) continue;
+    const compared = compareIso(latest, state.lastMessageReceivedAt);
+    if (compared === null || compared < 0) {
+      latest = state.lastMessageReceivedAt;
+    }
+  }
+  return latest;
+}
+
+function buildGraphSyncState(
+  mailboxId: string,
+  previousSyncState: MailboxSyncState | null | undefined,
+  results: GraphFolderDeltaResult[],
+): MailboxSyncState {
+  const folderStates = buildFolderStates(previousSyncState, results);
+  const inboxState = folderStates.inbox;
+  return {
+    mailboxId,
+    deltaLink: inboxState?.deltaLink,
+    lastSyncAt: nowIso(),
+    lastNotificationAt: previousSyncState?.lastNotificationAt,
+    lastMessageReceivedAt: latestFolderStateDate(
+      folderStates,
+      previousSyncState?.lastMessageReceivedAt,
+    ),
+    folderStates,
+    updatedAt: nowIso(),
+    lastError: undefined,
+  };
+}
+
+async function resolveGraphFolders(
+  graph: MicrosoftGraphClient,
+  connection: MailboxConnection,
+): Promise<{ connection: MailboxConnection; folders: ResolvedMailboxFolder[] }> {
+  let nextConnection = connection;
+  const folders: ResolvedMailboxFolder[] = [];
+
+  for (const spec of GRAPH_WATCHED_FOLDERS) {
+    let folderId = getFolderId(nextConnection, spec.kind);
+    if (!folderId) {
+      const folder = await graph.getMailFolder(spec.wellKnownName);
+      folderId = folder.id;
+      nextConnection = setFolderId(nextConnection, spec.kind, folder.id);
+    }
+    folders.push({
+      kind: spec.kind,
+      folderId,
+      folderName: spec.folderName,
+    });
+  }
+
+  return { connection: nextConnection, folders };
+}
+
+async function collectGraphFolderDeltas(
+  graph: MicrosoftGraphClient,
+  folders: ResolvedMailboxFolder[],
+  syncState: MailboxSyncState | null | undefined,
+): Promise<Array<GraphFolderDeltaResult & { hadDeltaLink: boolean }>> {
+  const results: Array<GraphFolderDeltaResult & { hadDeltaLink: boolean }> = [];
+
+  for (const folder of folders) {
+    const previousState = getFolderState(syncState, folder);
+    const delta = await graph.collectMessageDelta({
+      folderId: folder.folderId,
+      folderKind: folder.kind,
+      folderName: folder.folderName,
+      deltaLink: previousState?.deltaLink,
+    });
+    results.push({
+      ...folder,
+      deltaLink: delta.deltaLink,
+      messages: delta.messages,
+      hadDeltaLink: Boolean(previousState?.deltaLink),
+    });
+  }
+
+  return results;
+}
+
+function buildLeaseResource(_connection: MailboxConnection): string {
+  return buildMailboxMessagesResource();
 }
 
 function buildMissingLease(
@@ -316,13 +499,8 @@ async function createSubscriptionForMailbox(
   config: AppConfig,
   connection: MailboxConnection,
 ): Promise<MailboxSubscriptionLease> {
-  if (!connection.inboxFolderId) {
-    throw new Error("Mailbox inbox folder id is missing");
-  }
-
-  const resource = buildMailboxResource(connection.inboxFolderId);
   const created = await graph.createSubscription({
-    resource,
+    resource: buildLeaseResource(connection),
     notificationUrl: buildNotificationUrl(config),
     lifecycleNotificationUrl: buildNotificationUrl(config),
     clientState: config.webhookClientState,
@@ -359,10 +537,7 @@ export async function completeOAuthCallback(
   }
 
   const graph = new MicrosoftGraphClient(config, tokenSet.accessToken, fetchImpl);
-  const [user, inbox] = await Promise.all([
-    graph.getCurrentUser(),
-    graph.getInboxFolder(),
-  ]);
+  const user = await graph.getCurrentUser();
   const emailAddress = user.mail || user.userPrincipalName;
   if (!emailAddress) {
     throw new Error("Microsoft account does not expose a usable mail address");
@@ -387,7 +562,6 @@ export async function completeOAuthCallback(
     graphUserId: user.id,
     emailAddress,
     displayName: user.displayName || emailAddress,
-    inboxFolderId: inbox.id,
     encryptedRefreshToken,
     accessTokenExpiresAt: tokenSet.expiresAt,
     providerType,
@@ -396,6 +570,7 @@ export async function completeOAuthCallback(
     status: "active",
     lastError: undefined,
   };
+  const { connection: resolvedConnection, folders } = await resolveGraphFolders(graph, connection);
 
   const route: MailboxRoute = {
     mailboxId,
@@ -408,32 +583,21 @@ export async function completeOAuthCallback(
   let lease: MailboxSubscriptionLease;
 
   if (providerType === "graph_native") {
-    const baseline = await graph.collectMessageDelta({ folderId: inbox.id });
-    syncState = {
-      mailboxId,
-      deltaLink: baseline.deltaLink,
-      lastSyncAt: nowIso(),
-      lastNotificationAt: existingBundle?.syncState?.lastNotificationAt,
-      lastMessageReceivedAt: latestReceivedDate(
-        baseline.messages,
-        existingBundle?.syncState?.lastMessageReceivedAt,
-      ),
-      updatedAt: nowIso(),
-      lastError: undefined,
-    };
-    lease = await createSubscriptionForMailbox(graph, config, connection);
+    const baselines = await collectGraphFolderDeltas(graph, folders, null);
+    syncState = buildGraphSyncState(mailboxId, existingBundle?.syncState, baselines);
+    lease = await createSubscriptionForMailbox(graph, config, resolvedConnection);
   } else {
     syncState = await buildMsOauth2ApiBaselineState(kv, {
       config,
-      connection,
+      connection: resolvedConnection,
       route,
       previousSyncState: existingBundle?.syncState,
       fetchImpl,
     });
-    lease = buildMissingLease(connection, config);
+    lease = buildMissingLease(resolvedConnection, config);
   }
 
-  const bundle: MailboxBundle = { connection, route, syncState, lease };
+  const bundle: MailboxBundle = { connection: resolvedConnection, route, syncState, lease };
   await saveMailboxBundle(kv, bundle);
   await deleteOAuthState(kv, state);
   return bundle;
@@ -536,31 +700,12 @@ export async function updateMailboxProvider(input: {
     throw error;
   }
 
-  let connection = graphContext.connection;
-  if (!connection.inboxFolderId) {
-    const inbox = await graphContext.graph.getInboxFolder();
-    connection = {
-      ...connection,
-      inboxFolderId: inbox.id,
-      updatedAt: nowIso(),
-    };
-  }
-
-  const baseline = await graphContext.graph.collectMessageDelta({
-    folderId: connection.inboxFolderId!,
-  });
-  const syncState: MailboxSyncState = {
-    mailboxId: connection.mailboxId,
-    deltaLink: baseline.deltaLink,
-    lastSyncAt: nowIso(),
-    lastNotificationAt: bundle.syncState?.lastNotificationAt,
-    lastMessageReceivedAt: latestReceivedDate(
-      baseline.messages,
-      bundle.syncState?.lastMessageReceivedAt,
-    ),
-    updatedAt: nowIso(),
-    lastError: undefined,
-  };
+  const { connection, folders } = await resolveGraphFolders(
+    graphContext.graph,
+    graphContext.connection,
+  );
+  const baselines = await collectGraphFolderDeltas(graphContext.graph, folders, null);
+  const syncState = buildGraphSyncState(connection.mailboxId, bundle.syncState, baselines);
   const lease = await createSubscriptionForMailbox(
     graphContext.graph,
     config,
@@ -609,7 +754,7 @@ async function sendMailNotification(
 ): Promise<void> {
   if (!mailbox.route) throw new Error("Mailbox route is not configured");
   const text =
-    `📬 ${message.subject || "(no subject)"} — ${message.fromName || message.fromAddress || "Unknown sender"}`;
+    `📬 [${formatFolderLabel(message.folderKind, message.folderName)}] ${message.subject || "(no subject)"} — ${message.fromName || message.fromAddress || "Unknown sender"}`;
   const blocks = buildMailNotificationBlocks(mailbox, message, maxPreviewChars);
   await postChannelMessage(mailbox.route.slackChannelId, text, blocks);
 }
@@ -628,28 +773,37 @@ async function syncGraphMailbox(
     throw error;
   }
 
+  const { connection, folders } = await resolveGraphFolders(
+    graphContext.graph,
+    graphContext.connection,
+  );
   const workingBundle: MailboxBundle = {
     ...bundle,
-    connection: graphContext.connection,
+    connection,
   };
 
   try {
-    if (!workingBundle.connection.inboxFolderId) {
-      throw new Error("Mailbox inbox folder id is missing");
-    }
-
-    const delta = bundle.syncState?.deltaLink
-      ? await graphContext.graph.collectMessageDelta({
-        folderId: workingBundle.connection.inboxFolderId,
-        deltaLink: bundle.syncState.deltaLink,
-      })
-      : await graphContext.graph.collectMessageDelta({
-        folderId: workingBundle.connection.inboxFolderId,
-      });
+    const deltas = await collectGraphFolderDeltas(
+      graphContext.graph,
+      folders,
+      bundle.syncState,
+    );
 
     let delivered = 0;
     let skipped = 0;
-    for (const message of delta.messages) {
+    const deliverableMessages = deltas
+      .flatMap((delta) => {
+        if (!delta.hadDeltaLink) {
+          skipped += delta.messages.length;
+          return [];
+        }
+        return delta.messages;
+      })
+      .sort((left, right) =>
+        (left.receivedDateTime ?? "").localeCompare(right.receivedDateTime ?? "")
+      );
+
+    for (const message of deliverableMessages) {
       const dedupeKey = buildDedupeKey(bundle.connection.mailboxId, message);
       const alreadyDelivered = await hasDeliveredRecord(kv, bundle.connection.mailboxId, dedupeKey);
       if (alreadyDelivered) {
@@ -669,26 +823,24 @@ async function syncGraphMailbox(
       delivered++;
     }
 
-    const nextSyncState: MailboxSyncState = {
-      mailboxId: bundle.connection.mailboxId,
-      deltaLink: delta.deltaLink,
-      lastSyncAt: nowIso(),
-      lastNotificationAt: bundle.syncState?.lastNotificationAt,
-      lastMessageReceivedAt: latestReceivedDate(
-        delta.messages,
-        bundle.syncState?.lastMessageReceivedAt,
-      ),
-      updatedAt: nowIso(),
-      lastError: undefined,
-    };
+    const nextSyncState = buildGraphSyncState(
+      bundle.connection.mailboxId,
+      bundle.syncState,
+      deltas,
+    );
 
-    await saveMailboxBundle(kv, {
+    const nextBundle: MailboxBundle = {
       ...workingBundle,
       syncState: nextSyncState,
       lease: workingBundle.lease
         ? { ...workingBundle.lease, lastError: undefined, updatedAt: nowIso() }
         : workingBundle.lease,
-    });
+    };
+    await saveMailboxBundle(kv, nextBundle);
+    if (!nextBundle.lease?.subscriptionId ||
+      nextBundle.lease.resource !== buildLeaseResource(nextBundle.connection)) {
+      await ensureSubscriptionForBundle(nextBundle, fetchImpl);
+    }
 
     return { delivered, skipped };
   } catch (error) {
@@ -846,7 +998,10 @@ async function ensureSubscriptionForBundle(
     connection: graphContext.connection,
   };
   const renewalWindowMs = config.graphSubscriptionRenewalWindowMinutes * 60 * 1000;
+  const expectedResource = buildLeaseResource(baseBundle.connection);
+  const requiresRecreate = bundle.lease?.resource !== expectedResource;
   const requiresRenew = !bundle.lease?.subscriptionId ||
+    requiresRecreate ||
     isExpired(bundle.lease.expiresAt, renewalWindowMs);
   if (!requiresRenew) {
     await persistBundle(baseBundle);
@@ -855,10 +1010,20 @@ async function ensureSubscriptionForBundle(
 
   try {
     const nextExpiry = subscriptionExpiry(config);
-    const renewed = bundle.lease?.subscriptionId
+    if (requiresRecreate && bundle.lease?.subscriptionId) {
+      try {
+        await graphContext.graph.deleteSubscription(bundle.lease.subscriptionId);
+      } catch (error) {
+        const graphError = error instanceof GraphApiError ? error : null;
+        if (!graphError || ![404, 410].includes(graphError.status)) {
+          throw error;
+        }
+      }
+    }
+    const renewed = bundle.lease?.subscriptionId && !requiresRecreate
       ? await graphContext.graph.renewSubscription(bundle.lease.subscriptionId, nextExpiry)
       : await graphContext.graph.createSubscription({
-        resource: buildLeaseResource(baseBundle.connection),
+        resource: expectedResource,
         notificationUrl: buildNotificationUrl(config),
         lifecycleNotificationUrl: buildNotificationUrl(config),
         clientState: config.webhookClientState,
@@ -965,6 +1130,8 @@ export async function sendTestNotification(input: {
     ),
     receivedDateTime: nowIso(),
     webLink: new URL("https://outlook.office.com/mail/").toString(),
+    folderKind: "inbox",
+    folderName: "Inbox",
   }, config.mailPreviewMaxChars);
   return bundle;
 }
@@ -1022,6 +1189,7 @@ export async function processGraphNotifications(
       deltaLink: bundle.syncState?.deltaLink,
       lastSyncAt: bundle.syncState?.lastSyncAt,
       lastMessageReceivedAt: bundle.syncState?.lastMessageReceivedAt,
+      folderStates: cloneFolderStates(bundle.syncState?.folderStates),
       lastNotificationAt: nowIso(),
       updatedAt: nowIso(),
       lastError: undefined,

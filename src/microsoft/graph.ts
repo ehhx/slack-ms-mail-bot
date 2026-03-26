@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config.ts";
-import type { MailMessageSummary } from "../mail/types.ts";
+import type { MailFolderKind, MailMessageSummary } from "../mail/types.ts";
 
 export interface MicrosoftGraphUser {
   id: string;
@@ -11,6 +11,7 @@ export interface MicrosoftGraphUser {
 export interface MicrosoftGraphMailFolder {
   id: string;
   displayName: string;
+  wellKnownName?: string;
 }
 
 export interface MicrosoftGraphSubscription {
@@ -85,10 +86,18 @@ export class MicrosoftGraphClient {
     );
   }
 
-  async getInboxFolder(): Promise<MicrosoftGraphMailFolder> {
+  async getMailFolder(folderName: string): Promise<MicrosoftGraphMailFolder> {
     return await this.request<MicrosoftGraphMailFolder>(
-      "/me/mailFolders/inbox?$select=id,displayName",
+      `/me/mailFolders/${encodePathSegment(folderName)}?$select=id,displayName,wellKnownName`,
     );
+  }
+
+  async getInboxFolder(): Promise<MicrosoftGraphMailFolder> {
+    return await this.getMailFolder("inbox");
+  }
+
+  async getJunkFolder(): Promise<MicrosoftGraphMailFolder> {
+    return await this.getMailFolder("junkemail");
   }
 
   async createSubscription(input: {
@@ -134,6 +143,8 @@ export class MicrosoftGraphClient {
 
   async collectMessageDelta(input: {
     folderId: string;
+    folderKind?: MailFolderKind;
+    folderName?: string;
     deltaLink?: string;
   }): Promise<{ messages: MailMessageSummary[]; deltaLink: string }> {
     const messages: MailMessageSummary[] = [];
@@ -159,6 +170,8 @@ export class MicrosoftGraphClient {
           bodyPreview: item.bodyPreview ? String(item.bodyPreview) : undefined,
           receivedDateTime: item.receivedDateTime ? String(item.receivedDateTime) : undefined,
           webLink: item.webLink ? String(item.webLink) : undefined,
+          folderKind: input.folderKind,
+          folderName: input.folderName,
         });
       }
 
@@ -179,4 +192,8 @@ export class MicrosoftGraphClient {
 
 export function buildMailboxResource(folderId: string): string {
   return `/me/mailFolders/${encodePathSegment(folderId)}/messages`;
+}
+
+export function buildMailboxMessagesResource(): string {
+  return "/me/messages";
 }

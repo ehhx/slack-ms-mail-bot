@@ -20,7 +20,7 @@ export interface AppConfig {
   mailProviderDefault: MailProviderType;
   msOauth2apiBaseUrl: string | null;
   msOauth2apiPassword: string | null;
-  msOauth2apiMailbox: "INBOX" | "Junk";
+  msOauth2apiMailboxes: Array<"INBOX" | "Junk">;
 }
 
 let cachedConfig: AppConfig | null = null;
@@ -58,9 +58,23 @@ function readMailProviderDefault(): MailProviderType {
   return "graph_native";
 }
 
-function readMsOauth2ApiMailbox(): "INBOX" | "Junk" {
-  const raw = (readEnv("MSOAUTH2API_MAILBOX") ?? "INBOX").trim();
-  return raw === "Junk" ? "Junk" : "INBOX";
+function readMsOauth2ApiMailboxes(): Array<"INBOX" | "Junk"> {
+  const raw = (readEnv("MSOAUTH2API_MAILBOX") ?? "INBOX,Junk")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const next: Array<"INBOX" | "Junk"> = [];
+  for (const value of raw) {
+    const normalized = value.toLowerCase();
+    if (normalized === "junk" && !next.includes("Junk")) {
+      next.push("Junk");
+      continue;
+    }
+    if (!next.includes("INBOX")) {
+      next.push("INBOX");
+    }
+  }
+  return next.length > 0 ? next : ["INBOX", "Junk"];
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -112,7 +126,7 @@ export async function getConfigAsync(): Promise<AppConfig> {
       ? normalizeBaseUrl(readEnv("MSOAUTH2API_BASE_URL")!)
       : null,
     msOauth2apiPassword: readEnv("MSOAUTH2API_PASSWORD"),
-    msOauth2apiMailbox: readMsOauth2ApiMailbox(),
+    msOauth2apiMailboxes: readMsOauth2ApiMailboxes(),
   };
 
   return cachedConfig;
