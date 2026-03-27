@@ -88,7 +88,9 @@ export class MicrosoftGraphClient {
 
   async getMailFolder(folderName: string): Promise<MicrosoftGraphMailFolder> {
     return await this.request<MicrosoftGraphMailFolder>(
-      `/me/mailFolders/${encodePathSegment(folderName)}?$select=id,displayName,wellKnownName`,
+      // mailFolder 资源在 v1.0 下不支持选择 wellKnownName；
+      // 这里只需要拿到 folder id 和 displayName，用于后续 delta query 与 Slack 展示。
+      `/me/mailFolders/${encodePathSegment(folderName)}?$select=id,displayName`,
     );
   }
 
