@@ -53,6 +53,7 @@ function toMessageSummary(
     subject: record.subject?.trim() || "(no subject)",
     fromAddress: record.send?.trim() || undefined,
     bodyPreview: record.text ?? record.html ?? undefined,
+    bodyContentType: record.text ? "text" : (record.html ? "html" : undefined),
     receivedDateTime: normalizeRecordDate(record.date),
     folderKind: folder.kind,
     folderName: folder.name,

@@ -99,7 +99,7 @@ export async function getConfigAsync(): Promise<AppConfig> {
     appBaseUrl: normalizeBaseUrl(requireEnv("APP_BASE_URL")),
     kvPath: readEnv("KV_PATH"),
     slackApiTimeoutMs: readIntEnv("SLACK_API_TIMEOUT_MS", 15000),
-    mailPreviewMaxChars: readIntEnv("MAIL_PREVIEW_MAX_CHARS", 220),
+    mailPreviewMaxChars: readIntEnv("MAIL_PREVIEW_MAX_CHARS", 800),
     graphApiBaseUrl: normalizeBaseUrl(
       readEnv("GRAPH_API_BASE_URL") ?? "https://graph.microsoft.com/v1.0",
     ),

@@ -1,9 +1,11 @@
 import type { MailMessageSummary, MailboxBundle } from "../mail/types.ts";
 import {
+  attachmentSummaryText,
   formatFolderLabel,
   formatMailboxRef,
   mailboxStatusLine,
   monitoredFoldersText,
+  notificationBodyText,
   toPreviewText,
 } from "../mail/message.ts";
 
@@ -181,9 +183,13 @@ export function buildMailNotificationBlocks(
   message: MailMessageSummary,
   maxPreviewChars: number,
 ): unknown[] {
-  const preview = toPreviewText(message.bodyPreview, maxPreviewChars);
+  const preview = toPreviewText(
+    notificationBodyText(message),
+    Math.max(maxPreviewChars, 800),
+  );
   const sender = message.fromName || message.fromAddress || "Unknown sender";
   const folderLabel = formatFolderLabel(message.folderKind, message.folderName);
+  const attachmentText = attachmentSummaryText(message.attachments);
   const elements: unknown[] = [];
   if (message.webLink) {
     elements.push({
@@ -206,6 +212,12 @@ export function buildMailNotificationBlocks(
       type: "section",
       text: { type: "mrkdwn", text: preview },
     },
+    ...(attachmentText
+      ? [{
+        type: "section",
+        text: { type: "mrkdwn", text: attachmentText },
+      }]
+      : []),
     ...(elements.length ? [{ type: "actions", elements }] : []),
   ];
 }

@@ -1,5 +1,9 @@
 import type { AppConfig } from "../config.ts";
-import type { MailFolderKind, MailMessageSummary } from "../mail/types.ts";
+import type {
+  MailAttachmentSummary,
+  MailFolderKind,
+  MailMessageSummary,
+} from "../mail/types.ts";
 
 export interface MicrosoftGraphUser {
   id: string;
@@ -19,6 +23,20 @@ export interface MicrosoftGraphSubscription {
   resource: string;
   expirationDateTime: string;
   clientState?: string;
+}
+
+interface GraphItemBody {
+  contentType?: "text" | "html";
+  content?: string;
+}
+
+interface GraphAttachmentRecord {
+  id?: string;
+  name?: string;
+  contentType?: string;
+  size?: number;
+  isInline?: boolean;
+  contentId?: string;
 }
 
 export class GraphApiError extends Error {
@@ -100,6 +118,64 @@ export class MicrosoftGraphClient {
 
   async getJunkFolder(): Promise<MicrosoftGraphMailFolder> {
     return await this.getMailFolder("junkemail");
+  }
+
+  async getMessageDetail(messageId: string): Promise<Partial<MailMessageSummary>> {
+    const message = await this.request<Record<string, unknown>>(
+      `/me/messages/${encodePathSegment(messageId)}?$select=id,subject,body,uniqueBody,receivedDateTime,webLink,internetMessageId,from,hasAttachments`,
+    );
+    const from = message.from as { emailAddress?: { name?: string; address?: string } } | undefined;
+    const body = (message.uniqueBody as GraphItemBody | undefined) ??
+      (message.body as GraphItemBody | undefined);
+    const hasAttachments = Boolean(message.hasAttachments);
+    const attachments = hasAttachments
+      ? await this.listMessageAttachments(messageId)
+      : undefined;
+
+    return {
+      messageId: String(message.id ?? messageId),
+      internetMessageId: message.internetMessageId
+        ? String(message.internetMessageId)
+        : undefined,
+      subject: message.subject ? String(message.subject) : "(no subject)",
+      fromName: from?.emailAddress?.name,
+      fromAddress: from?.emailAddress?.address,
+      bodyText: body?.content ? String(body.content) : undefined,
+      bodyContentType: body?.contentType === "html" ? "html" : "text",
+      receivedDateTime: message.receivedDateTime ? String(message.receivedDateTime) : undefined,
+      webLink: message.webLink ? String(message.webLink) : undefined,
+      hasAttachments,
+      attachments,
+    };
+  }
+
+  async listMessageAttachments(messageId: string): Promise<MailAttachmentSummary[]> {
+    const attachments: MailAttachmentSummary[] = [];
+    let nextUrl =
+      `${this.config.graphApiBaseUrl}/me/messages/${encodePathSegment(messageId)}/attachments?$select=id,name,contentType,size,isInline,contentId`;
+
+    while (nextUrl) {
+      const page = await this.request<{
+        value?: GraphAttachmentRecord[];
+        "@odata.nextLink"?: string;
+      }>(nextUrl);
+
+      for (const item of page.value ?? []) {
+        attachments.push({
+          attachmentId: item.id ? String(item.id) : undefined,
+          name: item.name ? String(item.name) : "(unnamed attachment)",
+          contentType: item.contentType ? String(item.contentType) : undefined,
+          size: typeof item.size === "number" ? item.size : undefined,
+          isInline: Boolean(item.isInline),
+          contentId: item.contentId ? String(item.contentId) : undefined,
+        });
+      }
+
+      nextUrl = page["@odata.nextLink"] ?? "";
+      if (!nextUrl) break;
+    }
+
+    return attachments;
   }
 
   async createSubscription(input: {

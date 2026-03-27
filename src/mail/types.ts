@@ -10,6 +10,15 @@ export interface MailboxFolderSyncState {
   lastMessageReceivedAt?: string;
 }
 
+export interface MailAttachmentSummary {
+  attachmentId?: string;
+  name: string;
+  contentType?: string;
+  size?: number;
+  isInline?: boolean;
+  contentId?: string;
+}
+
 export interface MailboxConnection {
   mailboxId: string;
   teamId: string;
@@ -101,8 +110,12 @@ export interface MailMessageSummary {
   fromName?: string;
   fromAddress?: string;
   bodyPreview?: string;
+  bodyText?: string;
+  bodyContentType?: "text" | "html";
   receivedDateTime?: string;
   webLink?: string;
+  hasAttachments?: boolean;
+  attachments?: MailAttachmentSummary[];
   folderKind?: MailFolderKind;
   folderName?: string;
 }

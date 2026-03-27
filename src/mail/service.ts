@@ -759,6 +759,24 @@ async function sendMailNotification(
   await postChannelMessage(mailbox.route.slackChannelId, text, blocks);
 }
 
+async function enrichGraphMessageForNotification(
+  graph: MicrosoftGraphClient,
+  message: MailMessageSummary,
+): Promise<MailMessageSummary> {
+  try {
+    const detail = await graph.getMessageDetail(message.messageId);
+    return {
+      ...message,
+      ...detail,
+      folderKind: message.folderKind,
+      folderName: message.folderName,
+    };
+  } catch (error) {
+    console.error("Failed to enrich Graph message detail", message.messageId, error);
+    return message;
+  }
+}
+
 async function syncGraphMailbox(
   bundle: MailboxBundle,
   config: AppConfig,
@@ -804,19 +822,39 @@ async function syncGraphMailbox(
       );
 
     for (const message of deliverableMessages) {
-      const dedupeKey = buildDedupeKey(bundle.connection.mailboxId, message);
-      const alreadyDelivered = await hasDeliveredRecord(kv, bundle.connection.mailboxId, dedupeKey);
+      const initialDedupeKey = buildDedupeKey(bundle.connection.mailboxId, message);
+      const alreadyDelivered = await hasDeliveredRecord(
+        kv,
+        bundle.connection.mailboxId,
+        initialDedupeKey,
+      );
       if (alreadyDelivered) {
         skipped++;
         continue;
       }
-      await sendMailNotification(workingBundle, message, config.mailPreviewMaxChars);
+      const enrichedMessage = await enrichGraphMessageForNotification(
+        graphContext.graph,
+        message,
+      );
+      const dedupeKey = buildDedupeKey(bundle.connection.mailboxId, enrichedMessage);
+      if (dedupeKey !== initialDedupeKey) {
+        const deliveredAfterEnrich = await hasDeliveredRecord(
+          kv,
+          bundle.connection.mailboxId,
+          dedupeKey,
+        );
+        if (deliveredAfterEnrich) {
+          skipped++;
+          continue;
+        }
+      }
+      await sendMailNotification(workingBundle, enrichedMessage, config.mailPreviewMaxChars);
       await saveDeliveredRecord(kv, {
         mailboxId: bundle.connection.mailboxId,
         dedupeKey,
-        messageId: message.messageId,
-        internetMessageId: message.internetMessageId,
-        subject: message.subject,
+        messageId: enrichedMessage.messageId,
+        internetMessageId: enrichedMessage.internetMessageId,
+        subject: enrichedMessage.subject,
         slackChannelId: bundle.route?.slackChannelId ?? "",
         deliveredAt: nowIso(),
       });

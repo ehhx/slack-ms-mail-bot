@@ -41,7 +41,7 @@
 推荐：
 
 - `MICROSOFT_AUTH_TENANT=common`
-- `MAIL_PREVIEW_MAX_CHARS=220`
+- `MAIL_PREVIEW_MAX_CHARS=800`
 - `GRAPH_SUBSCRIPTION_RENEWAL_WINDOW_MINUTES=180`
 - `GRAPH_SUBSCRIPTION_MAX_MINUTES=4230`
 - `MAIL_SYNC_POLL_INTERVAL_MINUTES=15`
@@ -147,6 +147,8 @@ export MSOAUTH2API_MAILBOX="INBOX,Junk"
 - 自动创建 Graph subscription（订阅整个 mailbox 的 message created 事件）
 - 通过 `/graph/webhook` 接收变更通知
 - 实际补偿同步时分别对 **Inbox** 与 **Junk** 执行 delta query
+- 新邮件通知前会补拉 message 详情，展示更长正文摘要与附件元数据
+- 当前仅显示附件名称 / 类型 / 大小，不会把图片或文件上传到 Slack
 - 仍会由维护任务做补偿同步与续租
 
 ### `ms_oauth2api`
@@ -154,6 +156,7 @@ export MSOAUTH2API_MAILBOX="INBOX,Junk"
 - OAuth 完成后只保存 refresh token，并通过服务端调用 `msOauth2api /api/mail-all`
 - 首次连接/切换到该 provider 时会先建立“历史邮件基线”，避免把旧邮件一次性推到 Slack
 - 不依赖 `/graph/webhook`
+- 目前只展示上游接口返回的预览，不补拉附件元数据
 - 主要依赖维护轮询与 `/mail sync <mailbox>` 手动补偿
 
 ## msOauth2api 部署要求
