@@ -25,6 +25,7 @@
 - `src/microsoft/*`：Microsoft OAuth + Graph 封装
 - `src/mail/*`：邮箱领域模型、同步编排、通知格式
 - `src/store/*`：Deno KV 仓储
+- `src/web/*`：Web 控制台登录、路由、页面渲染
 
 ## 环境变量
 
@@ -52,6 +53,8 @@
 - `SLACK_API_TIMEOUT_MS=15000`
 - `GRAPH_WEBHOOK_CLIENT_STATE=<custom secret>`
 - `KV_PATH=<local kv sqlite path>`
+- `WEB_ADMIN_PASSWORD=<your admin password>`
+- `WEB_SESSION_SECRET=<optional cookie signing secret>`
 
 示例：
 
@@ -67,6 +70,7 @@ export MAIL_PROVIDER_DEFAULT="graph_native"
 export MSOAUTH2API_BASE_URL="https://your-ms-oauth2api.example.com"
 export MSOAUTH2API_PASSWORD=""
 export MSOAUTH2API_MAILBOX="INBOX,Junk"
+export WEB_ADMIN_PASSWORD="change-this-password"
 ```
 
 ## Slack App 配置
@@ -91,6 +95,7 @@ export MSOAUTH2API_MAILBOX="INBOX,Junk"
 - `commands`
 - `chat:write`
 - `chat:write.public`（如果要向机器人未加入的公共频道投递，按需开启）
+- `files:write`（如果要把邮件内联图片上传到 Slack，必须开启）
 
 ## Microsoft App 配置
 
@@ -117,6 +122,13 @@ export MSOAUTH2API_MAILBOX="INBOX,Junk"
 ## HTTP 路由
 
 - `GET /healthz`
+- `GET /app/login`
+- `POST /app/login`
+- `POST /app/logout`
+- `GET /app`
+- `GET /api/mailboxes`
+- `GET /api/mailboxes/:mailboxId/messages?folder=inbox|junk`
+- `GET /api/mailboxes/:mailboxId/messages/:messageId?folder=inbox|junk`
 - `POST /slack/commands`
 - `POST /slack/interactivity`
 - `POST /graph/webhook`
@@ -148,7 +160,8 @@ export MSOAUTH2API_MAILBOX="INBOX,Junk"
 - 通过 `/graph/webhook` 接收变更通知
 - 实际补偿同步时分别对 **Inbox** 与 **Junk** 执行 delta query
 - 新邮件通知前会补拉 message 详情，展示更长正文摘要与附件元数据
-- 当前仅显示附件名称 / 类型 / 大小，不会把图片或文件上传到 Slack
+- 非图片附件当前仍只显示名称 / 类型 / 大小，不会上传到 Slack
+- 对 HTML 正文中的链接会尽量保留；对 inline 图片会在线程中上传前 3 张（需 `files:write`）
 - 仍会由维护任务做补偿同步与续租
 
 ### `ms_oauth2api`
@@ -182,6 +195,22 @@ deno task dev
 默认监听 `http://localhost:8000`。
 
 建议用 ngrok / Cloudflare Tunnel 暴露公网地址，分别配置到 Slack 与 Microsoft Graph。
+
+## Web 控制台
+
+- 登录方式：简单管理员密码（`WEB_ADMIN_PASSWORD`）
+- 入口：`/app`
+- 当前范围：**只读** 多账号控制台
+- 当前只支持 `graph_native` 邮箱读取；`ms_oauth2api` 邮箱会显示但不能在 Web 中展开消息
+- 当前能力：
+  - 左侧多邮箱列表
+  - 中间 Inbox / Junk 最近邮件列表
+  - 右侧邮件详情、附件列表、`Open in Outlook`
+  - HTML 邮件正文渲染；可尝试把 inline 图片替换为 data URL
+- 当前不支持：
+  - 回复 / 转发 / 删除 / 标记已读
+  - Web 端修改路由或连接配置
+  - 全局搜索与历史索引
 
 ## 部署到 Deno Deploy
 

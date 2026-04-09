@@ -3,6 +3,7 @@ import {
   deleteMailbox,
   getMailboxBundle,
   hasDeliveredRecord,
+  listAllMailboxBundles,
   listMailboxBundles,
   resolveMailboxBundle,
   saveDeliveredRecord,
@@ -75,6 +76,8 @@ Deno.test("mailbox repository saves and resolves bundles", async () => {
 
   const listed = await listMailboxBundles(kv, "T1");
   assertEquals(listed.length, 1);
+  const allListed = await listAllMailboxBundles(kv);
+  assertEquals(allListed.length, 1);
 
   const resolved = await resolveMailboxBundle(kv, "T1", "mailbox@example.com");
   assert(resolved);

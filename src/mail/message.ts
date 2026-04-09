@@ -59,6 +59,13 @@ function decodeHtmlEntities(input: string): string {
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)));
 }
 
+function readHtmlAttribute(tag: string, name: string): string | undefined {
+  const pattern = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+  const matched = tag.match(pattern);
+  const value = matched?.[1] ?? matched?.[2] ?? matched?.[3];
+  return value ? decodeHtmlEntities(value) : undefined;
+}
+
 export function htmlToPlainText(input: string | undefined): string {
   if (!input) return "";
   return decodeHtmlEntities(
@@ -66,6 +73,24 @@ export function htmlToPlainText(input: string | undefined): string {
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<head[\s\S]*?<\/head>/gi, " ")
+      .replace(/<a\b[^>]*href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)[^>]*>([\s\S]*?)<\/a>/gi, (full, _href, text) => {
+        const href = readHtmlAttribute(full, "href");
+        const label = decodeHtmlEntities(String(text ?? "")).replace(/<[^>]+>/g, " ").trim();
+        if (!href) return label;
+        if (!label) return href;
+        return label === href ? href : `${label} (${href})`;
+      })
+      .replace(/<img\b[^>]*>/gi, (tag) => {
+        const src = readHtmlAttribute(tag, "src");
+        const alt = readHtmlAttribute(tag, "alt");
+        if (src?.startsWith("cid:")) {
+          return alt ? ` [内联图片：${alt}] ` : " [内联图片] ";
+        }
+        if (src) {
+          return alt ? ` [图片：${alt} ${src}] ` : ` [图片：${src}] `;
+        }
+        return alt ? ` [图片：${alt}] ` : " [图片] ";
+      })
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<\/(p|div|section|article|tr|table|h[1-6])>/gi, "\n")
       .replace(/<li[^>]*>/gi, "• ")
@@ -81,8 +106,18 @@ export function htmlToPlainText(input: string | undefined): string {
 
 export function notificationBodyText(message: MailMessageSummary): string {
   const body = message.bodyText?.trim() || message.bodyPreview?.trim() || "";
-  if (!body) return "";
-  return message.bodyContentType === "html" ? htmlToPlainText(body) : body;
+  if (!body) {
+    const inlineImageCount = (message.attachments ?? []).filter((attachment) =>
+      attachment.isInline && attachment.contentType?.startsWith("image/")
+    ).length;
+    return inlineImageCount > 0 ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。` : "";
+  }
+  const text = message.bodyContentType === "html" ? htmlToPlainText(body) : body;
+  if (text.trim()) return text;
+  const inlineImageCount = (message.attachments ?? []).filter((attachment) =>
+    attachment.isInline && attachment.contentType?.startsWith("image/")
+  ).length;
+  return inlineImageCount > 0 ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。` : text;
 }
 
 function formatBytes(input: number | undefined): string | null {

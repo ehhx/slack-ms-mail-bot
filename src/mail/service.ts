@@ -12,7 +12,7 @@ import {
 } from "../microsoft/oauth.ts";
 import type { GraphWebhookNotification } from "../microsoft/webhook.ts";
 import { fetchMsOauth2ApiMessages, MsOauth2ApiError } from "../providers/msoauth2api.ts";
-import { postChannelMessage } from "../slack/api.ts";
+import { postChannelMessage, SlackApiError, uploadInlineImageToSlack } from "../slack/api.ts";
 import { buildMailNotificationBlocks } from "../slack/ui.ts";
 import { getKv } from "../store/kv.ts";
 import {
@@ -24,6 +24,7 @@ import {
   getMailboxBundle,
   getMailboxIdBySubscription,
   getOAuthState,
+  listAllMailboxBundles,
   listMailboxBundles,
   listSyncJobs,
   markSyncJobAttempt,
@@ -42,6 +43,7 @@ import type {
   MailboxBundle,
   MailboxConnection,
   MailboxFolderSyncState,
+  MailInlineImage,
   MailboxRoute,
   MailboxSubscriptionLease,
   MailboxSyncState,
@@ -52,6 +54,11 @@ import type {
 function nowIso(): string {
   return new Date().toISOString();
 }
+
+const MAX_INLINE_IMAGE_UPLOADS = 3;
+const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
+const WEB_MESSAGE_LIST_LIMIT = 25;
+const WEB_INLINE_IMAGE_LIMIT = 12;
 
 function isExpired(iso: string | undefined, marginMs = 0): boolean {
   if (!iso) return true;
@@ -608,6 +615,136 @@ export async function listMailboxes(teamId: string): Promise<MailboxBundle[]> {
   return await listMailboxBundles(kv, teamId);
 }
 
+function resolveFolderKind(input: MailFolderKind | string | undefined): MailFolderKind {
+  return input === "junk" ? "junk" : "inbox";
+}
+
+function requireResolvedFolder(
+  folders: ResolvedMailboxFolder[],
+  kind: MailFolderKind,
+): ResolvedMailboxFolder {
+  const folder = folders.find((entry) => entry.kind === kind);
+  if (!folder) {
+    throw new Error(`Mail folder not found: ${kind}`);
+  }
+  return folder;
+}
+
+async function getGraphMailboxAccessForRead(
+  mailboxId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{
+  kv: Deno.Kv;
+  config: AppConfig;
+  bundle: MailboxBundle;
+  graph: MicrosoftGraphClient;
+  folders: ResolvedMailboxFolder[];
+}> {
+  const config = await getConfigAsync();
+  const kv = await getKv();
+  const bundle = await getMailboxBundle(kv, mailboxId);
+  if (!bundle) throw new Error("Mailbox not found");
+  if (bundle.connection.providerType !== "graph_native") {
+    throw new Error("Web console 当前只支持 Graph Native 邮箱");
+  }
+
+  let graphContext;
+  try {
+    graphContext = await ensureGraphContext(bundle, config, fetchImpl);
+  } catch (error) {
+    await updateBundleWithError(bundle, error, "connection");
+    throw error;
+  }
+  const { connection, folders } = await resolveGraphFolders(
+    graphContext.graph,
+    graphContext.connection,
+  );
+  const nextBundle: MailboxBundle = {
+    ...bundle,
+    connection,
+  };
+  await saveMailboxBundle(kv, nextBundle);
+
+  return {
+    kv,
+    config,
+    bundle: nextBundle,
+    graph: graphContext.graph,
+    folders,
+  };
+}
+
+export async function listAllMailboxBundlesForWeb(): Promise<MailboxBundle[]> {
+  const kv = await getKv();
+  return await listAllMailboxBundles(kv);
+}
+
+export async function listMailboxMessagesForWeb(input: {
+  mailboxId: string;
+  folderKind?: MailFolderKind | string;
+  limit?: number;
+  pageUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  bundle: MailboxBundle;
+  folder: { kind: MailFolderKind; folderId: string; folderName: string };
+  messages: MailMessageSummary[];
+  nextPageUrl?: string;
+}> {
+  const { bundle, graph, folders } = await getGraphMailboxAccessForRead(
+    input.mailboxId,
+    input.fetchImpl,
+  );
+  const folder = requireResolvedFolder(folders, resolveFolderKind(input.folderKind));
+  const page = await graph.listFolderMessages({
+    folderId: folder.folderId,
+    folderKind: folder.kind,
+    folderName: folder.folderName,
+    top: input.limit ?? WEB_MESSAGE_LIST_LIMIT,
+    pageUrl: input.pageUrl,
+  });
+
+  return {
+    bundle,
+    folder,
+    messages: page.messages,
+    nextPageUrl: page.nextPageUrl,
+  };
+}
+
+export async function getMailboxMessageForWeb(input: {
+  mailboxId: string;
+  messageId: string;
+  folderKind?: MailFolderKind | string;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  bundle: MailboxBundle;
+  folderKind: MailFolderKind;
+  message: MailMessageSummary;
+}> {
+  const { bundle, graph } = await getGraphMailboxAccessForRead(
+    input.mailboxId,
+    input.fetchImpl,
+  );
+  const folderKind = resolveFolderKind(input.folderKind);
+  const message = await enrichGraphMessage(
+    graph,
+    {
+      messageId: input.messageId,
+      subject: "(loading)",
+      folderKind,
+      folderName: formatFolderLabel(folderKind),
+    },
+    WEB_INLINE_IMAGE_LIMIT,
+  );
+
+  return {
+    bundle,
+    folderKind,
+    message,
+  };
+}
+
 export async function updateMailboxRoute(input: {
   teamId: string;
   mailbox: string;
@@ -756,7 +893,91 @@ async function sendMailNotification(
   const text =
     `📬 [${formatFolderLabel(message.folderKind, message.folderName)}] ${message.subject || "(no subject)"} — ${message.fromName || message.fromAddress || "Unknown sender"}`;
   const blocks = buildMailNotificationBlocks(mailbox, message, maxPreviewChars);
-  await postChannelMessage(mailbox.route.slackChannelId, text, blocks);
+  const posted = await postChannelMessage(mailbox.route.slackChannelId, text, blocks);
+  const threadTs = posted.ts;
+  if (!threadTs || !message.inlineImages?.length) return;
+
+  for (const image of message.inlineImages.slice(0, MAX_INLINE_IMAGE_UPLOADS)) {
+    try {
+      await uploadInlineImageToSlack({
+        channel: mailbox.route.slackChannelId,
+        threadTs,
+        image,
+      });
+    } catch (error) {
+      if (error instanceof SlackApiError) {
+        console.error("Failed to upload inline image to Slack", {
+          error: error.message,
+          body: error.body,
+          mailboxId: mailbox.connection.mailboxId,
+          messageId: message.messageId,
+          attachmentId: image.attachmentId,
+        });
+        break;
+      }
+      console.error("Failed to upload inline image to Slack", error);
+      break;
+    }
+  }
+}
+
+async function loadInlineImagesForGraphMessage(
+  graph: MicrosoftGraphClient,
+  message: MailMessageSummary,
+  maxItems: number,
+): Promise<MailInlineImage[]> {
+  const inlineAttachments = (message.attachments ?? [])
+    .filter((attachment) =>
+      Boolean(
+        attachment.attachmentId &&
+        attachment.isInline &&
+        attachment.contentType?.startsWith("image/") &&
+        (!attachment.size || attachment.size <= MAX_INLINE_IMAGE_BYTES),
+      )
+    )
+    .slice(0, Math.max(0, maxItems));
+  const inlineImages: MailInlineImage[] = [];
+  for (const attachment of inlineAttachments) {
+    try {
+      const content = await graph.getInlineImageAttachmentContent(
+        message.messageId,
+        attachment.attachmentId!,
+      );
+      if (content) {
+        inlineImages.push(content);
+      }
+    } catch (error) {
+      console.error("Failed to read inline image attachment", {
+        messageId: message.messageId,
+        attachmentId: attachment.attachmentId,
+        error,
+      });
+    }
+  }
+  return inlineImages;
+}
+
+async function enrichGraphMessage(
+  graph: MicrosoftGraphClient,
+  message: MailMessageSummary,
+  inlineImageLimit: number,
+): Promise<MailMessageSummary> {
+  const detail = await graph.getMessageDetail(message.messageId);
+  const merged: MailMessageSummary = {
+    ...message,
+    ...detail,
+    folderKind: message.folderKind,
+    folderName: message.folderName,
+  };
+  const inlineImages = await loadInlineImagesForGraphMessage(
+    graph,
+    merged,
+    inlineImageLimit,
+  );
+  return {
+    ...merged,
+    inlineImages,
+  };
 }
 
 async function enrichGraphMessageForNotification(
@@ -764,13 +985,7 @@ async function enrichGraphMessageForNotification(
   message: MailMessageSummary,
 ): Promise<MailMessageSummary> {
   try {
-    const detail = await graph.getMessageDetail(message.messageId);
-    return {
-      ...message,
-      ...detail,
-      folderKind: message.folderKind,
-      folderName: message.folderName,
-    };
+    return await enrichGraphMessage(graph, message, MAX_INLINE_IMAGE_UPLOADS);
   } catch (error) {
     console.error("Failed to enrich Graph message detail", message.messageId, error);
     return message;

@@ -23,6 +23,8 @@ const config: AppConfig = {
   msOauth2apiBaseUrl: null,
   msOauth2apiPassword: null,
   msOauth2apiMailboxes: ["INBOX"],
+  webAdminPassword: null,
+  webSessionSecret: "web-session-secret",
 };
 
 Deno.test("buildMicrosoftAuthorizeUrl includes OAuth params", () => {

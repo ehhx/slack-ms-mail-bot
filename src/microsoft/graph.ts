@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config.ts";
 import type {
   MailAttachmentSummary,
+  MailInlineImage,
   MailFolderKind,
   MailMessageSummary,
 } from "../mail/types.ts";
@@ -31,12 +32,20 @@ interface GraphItemBody {
 }
 
 interface GraphAttachmentRecord {
+  "@odata.type"?: string;
   id?: string;
   name?: string;
   contentType?: string;
   size?: number;
   isInline?: boolean;
   contentId?: string;
+  contentBytes?: string;
+}
+
+interface GraphCollectionPage {
+  value?: Array<Record<string, unknown>>;
+  "@odata.nextLink"?: string;
+  "@odata.deltaLink"?: string;
 }
 
 export class GraphApiError extends Error {
@@ -149,6 +158,58 @@ export class MicrosoftGraphClient {
     };
   }
 
+  private mapMessageRecord(
+    item: Record<string, unknown>,
+    input: { folderKind?: MailFolderKind; folderName?: string },
+  ): MailMessageSummary {
+    const from = item.from as { emailAddress?: { name?: string; address?: string } } | undefined;
+    return {
+      messageId: String(item.id ?? ""),
+      internetMessageId: item.internetMessageId ? String(item.internetMessageId) : undefined,
+      subject: item.subject ? String(item.subject) : "(no subject)",
+      fromName: from?.emailAddress?.name,
+      fromAddress: from?.emailAddress?.address,
+      bodyPreview: item.bodyPreview ? String(item.bodyPreview) : undefined,
+      receivedDateTime: item.receivedDateTime ? String(item.receivedDateTime) : undefined,
+      webLink: item.webLink ? String(item.webLink) : undefined,
+      hasAttachments: Boolean(item.hasAttachments),
+      folderKind: input.folderKind,
+      folderName: input.folderName,
+    };
+  }
+
+  async listFolderMessages(input: {
+    folderId: string;
+    folderKind?: MailFolderKind;
+    folderName?: string;
+    top?: number;
+    pageUrl?: string;
+  }): Promise<{ messages: MailMessageSummary[]; nextPageUrl?: string }> {
+    const top = Math.max(1, Math.min(input.top ?? 25, 100));
+    const withOrderBy =
+      `${this.config.graphApiBaseUrl}/me/mailFolders/${encodePathSegment(input.folderId)}/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$orderby=receivedDateTime%20desc&$top=${top}`;
+    const fallbackUrl =
+      `${this.config.graphApiBaseUrl}/me/mailFolders/${encodePathSegment(input.folderId)}/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$top=${top}`;
+    const requestUrl = input.pageUrl ?? withOrderBy;
+
+    try {
+      const page = await this.request<GraphCollectionPage>(requestUrl);
+      return {
+        messages: (page.value ?? []).map((item) => this.mapMessageRecord(item, input)),
+        nextPageUrl: page["@odata.nextLink"] || undefined,
+      };
+    } catch (error) {
+      if (input.pageUrl || !(error instanceof GraphApiError) || error.status !== 400) {
+        throw error;
+      }
+      const page = await this.request<GraphCollectionPage>(fallbackUrl);
+      return {
+        messages: (page.value ?? []).map((item) => this.mapMessageRecord(item, input)),
+        nextPageUrl: page["@odata.nextLink"] || undefined,
+      };
+    }
+  }
+
   async listMessageAttachments(messageId: string): Promise<MailAttachmentSummary[]> {
     const attachments: MailAttachmentSummary[] = [];
     let nextUrl =
@@ -176,6 +237,32 @@ export class MicrosoftGraphClient {
     }
 
     return attachments;
+  }
+
+  async getInlineImageAttachmentContent(
+    messageId: string,
+    attachmentId: string,
+  ): Promise<MailInlineImage | null> {
+    const attachment = await this.request<GraphAttachmentRecord>(
+      `/me/messages/${encodePathSegment(messageId)}/attachments/${encodePathSegment(attachmentId)}?$select=id,name,contentType,size,isInline,contentId,contentBytes`,
+    );
+    if (
+      attachment["@odata.type"] &&
+      attachment["@odata.type"] !== "#microsoft.graph.fileAttachment"
+    ) {
+      return null;
+    }
+    if (!attachment.contentBytes || !attachment.contentType?.startsWith("image/")) {
+      return null;
+    }
+    return {
+      attachmentId: String(attachment.id ?? attachmentId),
+      name: attachment.name ? String(attachment.name) : "inline-image",
+      contentType: String(attachment.contentType),
+      size: typeof attachment.size === "number" ? attachment.size : undefined,
+      contentId: attachment.contentId ? String(attachment.contentId) : undefined,
+      dataBase64: String(attachment.contentBytes),
+    };
   }
 
   async createSubscription(input: {
@@ -230,27 +317,11 @@ export class MicrosoftGraphClient {
     let latestDeltaLink: string | null = input.deltaLink ?? null;
 
     while (nextUrl) {
-      const page = await this.request<{
-        value?: Array<Record<string, unknown>>;
-        "@odata.nextLink"?: string;
-        "@odata.deltaLink"?: string;
-      }>(nextUrl);
+      const page = await this.request<GraphCollectionPage>(nextUrl);
 
       for (const item of page.value ?? []) {
         if (item["@removed"]) continue;
-        const from = item.from as { emailAddress?: { name?: string; address?: string } } | undefined;
-        messages.push({
-          messageId: String(item.id ?? ""),
-          internetMessageId: item.internetMessageId ? String(item.internetMessageId) : undefined,
-          subject: item.subject ? String(item.subject) : "(no subject)",
-          fromName: from?.emailAddress?.name,
-          fromAddress: from?.emailAddress?.address,
-          bodyPreview: item.bodyPreview ? String(item.bodyPreview) : undefined,
-          receivedDateTime: item.receivedDateTime ? String(item.receivedDateTime) : undefined,
-          webLink: item.webLink ? String(item.webLink) : undefined,
-          folderKind: input.folderKind,
-          folderName: input.folderName,
-        });
+        messages.push(this.mapMessageRecord(item, input));
       }
 
       if (page["@odata.deltaLink"]) {

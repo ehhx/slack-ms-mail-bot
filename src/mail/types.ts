@@ -19,6 +19,15 @@ export interface MailAttachmentSummary {
   contentId?: string;
 }
 
+export interface MailInlineImage {
+  attachmentId: string;
+  name: string;
+  contentType: string;
+  size?: number;
+  contentId?: string;
+  dataBase64: string;
+}
+
 export interface MailboxConnection {
   mailboxId: string;
   teamId: string;
@@ -116,6 +125,7 @@ export interface MailMessageSummary {
   webLink?: string;
   hasAttachments?: boolean;
   attachments?: MailAttachmentSummary[];
+  inlineImages?: MailInlineImage[];
   folderKind?: MailFolderKind;
   folderName?: string;
 }

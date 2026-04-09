@@ -6,6 +6,7 @@ import type { WaitUntilLike } from "./runtime.ts";
 import { runBackground } from "./runtime.ts";
 import { completeOAuthCallback, processGraphNotifications, processQueuedSyncs } from "./mail/service.ts";
 import { getGraphValidationToken, parseGraphWebhookBody } from "./microsoft/webhook.ts";
+import { handleWebRequest } from "./web/handler.ts";
 
 function htmlPage(title: string, body: string): Response {
   return new Response(
@@ -19,6 +20,11 @@ export async function handleRequest(
   ctx?: WaitUntilLike,
 ): Promise<Response> {
   const url = new URL(request.url);
+
+  const webResponse = await handleWebRequest(request);
+  if (webResponse) {
+    return webResponse;
+  }
 
   if (url.pathname === "/healthz") {
     return new Response("ok", { status: 200 });
@@ -39,7 +45,7 @@ export async function handleRequest(
       const bundle = await completeOAuthCallback(code, state);
       return htmlPage(
         "Mailbox connected",
-        `Connected ${bundle.connection.emailAddress}. You can return to Slack.`,
+        `Connected ${bundle.connection.emailAddress}. You can return to Slack or open /app after logging in.`,
       );
     } catch (oauthError) {
       console.error("OAuth callback failed", oauthError);

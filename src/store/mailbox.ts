@@ -211,6 +211,22 @@ export async function listMailboxBundles(
   return bundles.filter((value): value is MailboxBundle => Boolean(value));
 }
 
+export async function listAllMailboxBundles(
+  kv: Deno.Kv,
+): Promise<MailboxBundle[]> {
+  const ids: string[] = [];
+  for await (const entry of kv.list({ prefix: ["mailbox_connection"] })) {
+    ids.push(String(entry.key[1]));
+  }
+
+  const bundles = await Promise.all(ids.map((id) => getMailboxBundle(kv, id)));
+  return bundles
+    .filter((value): value is MailboxBundle => Boolean(value))
+    .sort((left, right) =>
+      left.connection.emailAddress.localeCompare(right.connection.emailAddress)
+    );
+}
+
 export async function resolveMailboxBundle(
   kv: Deno.Kv,
   teamId: string,

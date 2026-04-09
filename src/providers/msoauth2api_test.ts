@@ -23,6 +23,8 @@ const config: AppConfig = {
   msOauth2apiBaseUrl: "https://ms-oauth2api.example.com",
   msOauth2apiPassword: "password",
   msOauth2apiMailboxes: ["INBOX"],
+  webAdminPassword: null,
+  webSessionSecret: "web-session-secret",
 };
 
 Deno.test("fetchMsOauth2ApiMessages maps response and sorts by received time", async () => {

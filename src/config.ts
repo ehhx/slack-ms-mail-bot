@@ -21,6 +21,8 @@ export interface AppConfig {
   msOauth2apiBaseUrl: string | null;
   msOauth2apiPassword: string | null;
   msOauth2apiMailboxes: Array<"INBOX" | "Junk">;
+  webAdminPassword: string | null;
+  webSessionSecret: string;
 }
 
 let cachedConfig: AppConfig | null = null;
@@ -127,6 +129,8 @@ export async function getConfigAsync(): Promise<AppConfig> {
       : null,
     msOauth2apiPassword: readEnv("MSOAUTH2API_PASSWORD"),
     msOauth2apiMailboxes: readMsOauth2ApiMailboxes(),
+    webAdminPassword: readEnv("WEB_ADMIN_PASSWORD"),
+    webSessionSecret: readEnv("WEB_SESSION_SECRET") ?? tokenEncryptionKey,
   };
 
   return cachedConfig;

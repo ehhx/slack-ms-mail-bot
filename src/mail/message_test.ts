@@ -39,6 +39,15 @@ Deno.test("htmlToPlainText strips markup and decodes entities", () => {
   );
 });
 
+Deno.test("htmlToPlainText preserves anchor links and image markers", () => {
+  assertEquals(
+    htmlToPlainText(
+      '<p><a href="https://example.com">Read more</a><br><img src="cid:image001" alt="banner"></p>',
+    ),
+    "Read more (https://example.com)\n[内联图片：banner]",
+  );
+});
+
 Deno.test("notificationBodyText prefers bodyText and converts html to text", () => {
   assertEquals(
     notificationBodyText({
@@ -48,6 +57,21 @@ Deno.test("notificationBodyText prefers bodyText and converts html to text", () 
       bodyContentType: "html",
     }),
     "Line 1\nLine 2",
+  );
+});
+
+Deno.test("notificationBodyText falls back to image-only hint", () => {
+  assertEquals(
+    notificationBodyText({
+      messageId: "msg-1",
+      subject: "Hello",
+      bodyText: '<img src="cid:image001">',
+      bodyContentType: "html",
+      attachments: [
+        { name: "image001.png", contentType: "image/png", isInline: true },
+      ],
+    }),
+    "[内联图片]",
   );
 });
 
