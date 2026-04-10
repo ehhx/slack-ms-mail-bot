@@ -1,5 +1,6 @@
 import { monitoredFoldersText, notificationBodyText } from "../mail/message.ts";
 import {
+  InvalidWebMailPageCursorError,
   listAllMailboxBundlesForWeb,
   loadMailboxWebView,
 } from "../mail/service.ts";
@@ -17,12 +18,22 @@ export interface WebConsoleState {
   selectedFolder: MailFolderKind;
   messages: MailMessageSummary[];
   selectedMessage: WebMessageDetail | null;
+  pageIndex: number;
+  hasPreviousPage: boolean;
+  currentPageCursor?: string;
   error?: string;
-  nextPageUrl?: string;
+  nextPageCursor?: string;
 }
 
 function normalizeFolderKind(input: string | null | undefined): MailFolderKind {
   return input === "junk" ? "junk" : "inbox";
+}
+
+function normalizePageIndex(input: string | null | undefined, hasCursor: boolean): number {
+  if (!hasCursor) return 1;
+  const parsed = Number.parseInt(String(input ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed < 2) return 2;
+  return parsed;
 }
 
 function buildMessageDetail(message: MailMessageSummary): WebMessageDetail {
@@ -47,9 +58,12 @@ export async function buildWebConsoleState(input: {
   mailboxId?: string | null;
   folder?: string | null;
   messageId?: string | null;
+  pageCursor?: string | null;
+  page?: string | null;
   fetchImpl?: typeof fetch;
 }): Promise<WebConsoleState> {
   const selectedFolder = normalizeFolderKind(input.folder);
+  let pageIndex = normalizePageIndex(input.page, Boolean(input.pageCursor));
   let mailboxes = await listAllMailboxBundlesForWeb();
   if (mailboxes.length === 0) {
     return {
@@ -58,6 +72,9 @@ export async function buildWebConsoleState(input: {
       selectedFolder,
       messages: [],
       selectedMessage: null,
+      pageIndex: 1,
+      hasPreviousPage: false,
+      currentPageCursor: undefined,
     };
   }
 
@@ -77,6 +94,9 @@ export async function buildWebConsoleState(input: {
       selectedFolder,
       messages: [],
       selectedMessage: null,
+      pageIndex: 1,
+      hasPreviousPage: false,
+      currentPageCursor: undefined,
       error: error ?? "当前选中的邮箱使用 msOauth2api，Web 控制台暂只支持 Graph Native。",
     };
   }
@@ -87,18 +107,48 @@ export async function buildWebConsoleState(input: {
       mailboxId: selectedMailbox.connection.mailboxId,
       folderKind: selectedFolder,
       messageId: input.messageId,
+      pageCursor: input.pageCursor,
       fetchImpl: input.fetchImpl,
     });
   } catch (listError) {
-    const message = listError instanceof Error ? listError.message : String(listError);
-    return {
-      mailboxes,
-      selectedMailbox,
-      selectedFolder,
-      messages: [],
-      selectedMessage: null,
-      error: error ?? `读取邮件列表失败：${message}`,
-    };
+    if (listError instanceof InvalidWebMailPageCursorError) {
+      pageIndex = 1;
+      try {
+        page = await loadMailboxWebView({
+          mailboxId: selectedMailbox.connection.mailboxId,
+          folderKind: selectedFolder,
+          messageId: input.messageId,
+          fetchImpl: input.fetchImpl,
+        });
+        error = error ?? "分页游标已失效，已自动回到最新邮件。";
+      } catch (fallbackError) {
+        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        return {
+          mailboxes,
+          selectedMailbox,
+          selectedFolder,
+          messages: [],
+          selectedMessage: null,
+          pageIndex,
+          hasPreviousPage: false,
+          currentPageCursor: undefined,
+          error: error ?? `读取邮件列表失败：${message}`,
+        };
+      }
+    } else {
+      const message = listError instanceof Error ? listError.message : String(listError);
+      return {
+        mailboxes,
+        selectedMailbox,
+        selectedFolder,
+        messages: [],
+        selectedMessage: null,
+        pageIndex,
+        hasPreviousPage: pageIndex > 1,
+        currentPageCursor: input.pageCursor ?? undefined,
+        error: error ?? `读取邮件列表失败：${message}`,
+      };
+    }
   }
   selectedMailbox = page.bundle;
   mailboxes = replaceMailbox(mailboxes, selectedMailbox);
@@ -111,8 +161,11 @@ export async function buildWebConsoleState(input: {
     selectedFolder,
     messages: page.messages,
     selectedMessage,
+    pageIndex,
+    hasPreviousPage: pageIndex > 1,
+    currentPageCursor: pageIndex > 1 ? (input.pageCursor ?? undefined) : undefined,
     error,
-    nextPageUrl: page.nextPageUrl,
+    nextPageCursor: page.nextPageCursor,
   };
 }
 

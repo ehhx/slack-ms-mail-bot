@@ -59,6 +59,7 @@ const MAX_INLINE_IMAGE_UPLOADS = 3;
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 const WEB_MESSAGE_LIST_LIMIT = 25;
 const WEB_INLINE_IMAGE_LIMIT = 4;
+const WEB_PAGE_CURSOR_PREFIX = "graph-page:";
 
 function isExpired(iso: string | undefined, marginMs = 0): boolean {
   if (!iso) return true;
@@ -619,6 +620,78 @@ function resolveFolderKind(input: MailFolderKind | string | undefined): MailFold
   return input === "junk" ? "junk" : "inbox";
 }
 
+function encodeGraphPathSegment(value: string): string {
+  return encodeURIComponent(value).replace(/%2F/g, "/");
+}
+
+function encodeOpaqueCursor(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodeOpaqueCursor(input: string): string | null {
+  if (!input) return null;
+  try {
+    const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function buildGraphFolderMessagesPath(config: AppConfig, folderId: string): string {
+  const graphBase = new URL(config.graphApiBaseUrl);
+  const basePath = graphBase.pathname.replace(/\/+$/, "");
+  return `${basePath}/me/mailFolders/${encodeGraphPathSegment(folderId)}/messages`;
+}
+
+function assertSafeGraphPageUrl(
+  config: AppConfig,
+  folderId: string,
+  pageUrl: string,
+): string {
+  const graphBase = new URL(config.graphApiBaseUrl);
+  const parsed = new URL(pageUrl);
+  if (parsed.origin !== graphBase.origin) {
+    throw new InvalidWebMailPageCursorError("分页游标域名无效。");
+  }
+  if (parsed.pathname !== buildGraphFolderMessagesPath(config, folderId)) {
+    throw new InvalidWebMailPageCursorError("分页游标路径无效。");
+  }
+  if (!parsed.searchParams.has("$skiptoken") && !parsed.searchParams.has("$skip")) {
+    throw new InvalidWebMailPageCursorError("分页游标缺少分页参数。");
+  }
+  return parsed.toString();
+}
+
+export class InvalidWebMailPageCursorError extends Error {}
+
+export function encodeWebMailPageCursor(pageUrl: string): string {
+  return `${WEB_PAGE_CURSOR_PREFIX}${encodeOpaqueCursor(pageUrl)}`;
+}
+
+export function decodeWebMailPageCursor(
+  cursor: string,
+  config: AppConfig,
+  folderId: string,
+): string {
+  if (!cursor.startsWith(WEB_PAGE_CURSOR_PREFIX)) {
+    throw new InvalidWebMailPageCursorError("分页游标前缀无效。");
+  }
+  const decoded = decodeOpaqueCursor(cursor.slice(WEB_PAGE_CURSOR_PREFIX.length));
+  if (!decoded) {
+    throw new InvalidWebMailPageCursorError("分页游标无法解码。");
+  }
+  return assertSafeGraphPageUrl(config, folderId, decoded);
+}
+
 function requireResolvedFolder(
   folders: ResolvedMailboxFolder[],
   kind: MailFolderKind,
@@ -684,26 +757,29 @@ export async function loadMailboxWebView(input: {
   folderKind?: MailFolderKind | string;
   messageId?: string | null;
   limit?: number;
-  pageUrl?: string;
+  pageCursor?: string | null;
   fetchImpl?: typeof fetch;
 }): Promise<{
   bundle: MailboxBundle;
   folder: { kind: MailFolderKind; folderId: string; folderName: string };
   messages: MailMessageSummary[];
   selectedMessage: MailMessageSummary | null;
-  nextPageUrl?: string;
+  nextPageCursor?: string;
 }> {
-  const { bundle, graph, folders } = await getGraphMailboxAccessForRead(
+  const { bundle, config, graph, folders } = await getGraphMailboxAccessForRead(
     input.mailboxId,
     input.fetchImpl,
   );
   const folder = requireResolvedFolder(folders, resolveFolderKind(input.folderKind));
+  const pageUrl = input.pageCursor
+    ? decodeWebMailPageCursor(input.pageCursor, config, folder.folderId)
+    : undefined;
   const page = await graph.listFolderMessages({
     folderId: folder.folderId,
     folderKind: folder.kind,
     folderName: folder.folderName,
     top: input.limit ?? WEB_MESSAGE_LIST_LIMIT,
-    pageUrl: input.pageUrl,
+    pageUrl,
   });
 
   let selectedMessage: MailMessageSummary | null = null;
@@ -722,7 +798,9 @@ export async function loadMailboxWebView(input: {
     folder,
     messages: page.messages,
     selectedMessage,
-    nextPageUrl: page.nextPageUrl,
+    nextPageCursor: page.nextPageUrl
+      ? encodeWebMailPageCursor(page.nextPageUrl)
+      : undefined,
   };
 }
 
@@ -730,20 +808,20 @@ export async function listMailboxMessagesForWeb(input: {
   mailboxId: string;
   folderKind?: MailFolderKind | string;
   limit?: number;
-  pageUrl?: string;
+  pageCursor?: string | null;
   fetchImpl?: typeof fetch;
 }): Promise<{
   bundle: MailboxBundle;
   folder: { kind: MailFolderKind; folderId: string; folderName: string };
   messages: MailMessageSummary[];
-  nextPageUrl?: string;
+  nextPageCursor?: string;
 }> {
   const page = await loadMailboxWebView(input);
   return {
     bundle: page.bundle,
     folder: page.folder,
     messages: page.messages,
-    nextPageUrl: page.nextPageUrl,
+    nextPageCursor: page.nextPageCursor,
   };
 }
 

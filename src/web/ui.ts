@@ -22,17 +22,21 @@ function appHref(input: {
   mailboxId?: string;
   folder?: "inbox" | "junk";
   messageId?: string;
+  pageCursor?: string | null;
+  page?: number | null;
 }): string {
   const params = new URLSearchParams();
   if (input.mailboxId) params.set("mailbox", input.mailboxId);
   if (input.folder) params.set("folder", input.folder);
   if (input.messageId) params.set("message", input.messageId);
+  if (input.pageCursor) params.set("pageCursor", input.pageCursor);
+  if (input.page && input.page > 1) params.set("page", String(input.page));
   const query = params.toString();
   return query ? `/app?${query}` : "/app";
 }
 
 function providerLabel(bundle: MailboxBundle): string {
-  return bundle.connection.providerType === "ms_oauth2api" ? "msOauth2api" : "Graph Native";
+  return bundle.connection.providerType === "ms_oauth2api" ? "msOauth2api" : "Graph 原生";
 }
 
 function normalizeContentId(input: string | undefined): string {
@@ -50,11 +54,9 @@ function dataUrlForInlineImage(image: MailInlineImage): string {
 function rewriteCidImages(html: string, inlineImages: MailInlineImage[] | undefined): string {
   const contentIdMap = new Map<string, string>();
   for (const image of inlineImages ?? []) {
-    const contentId = normalizeContentId(image.contentId);
     const dataUrl = dataUrlForInlineImage(image);
-    if (contentId) {
-      contentIdMap.set(contentId, dataUrl);
-    }
+    const contentId = normalizeContentId(image.contentId);
+    if (contentId) contentIdMap.set(contentId, dataUrl);
     contentIdMap.set(normalizeContentId(image.name), dataUrl);
   }
 
@@ -98,19 +100,30 @@ function buildReaderSrcdoc(html: string, inlineImages: MailInlineImage[] | undef
         color-scheme: light;
         --text: #0f172a;
         --muted: #475569;
-        --border: #dbe4f0;
+        --line: #d7e1ee;
         --accent: #2563eb;
         --bg: #ffffff;
       }
       * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 15px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
-      body { padding: 24px; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.68 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      body { padding: 30px; }
       img { max-width: 100%; height: auto; }
       table { max-width: 100% !important; }
       pre, code { white-space: pre-wrap; word-break: break-word; }
       a { color: var(--accent); }
-      blockquote { margin: 1.2rem 0; padding-left: 1rem; border-left: 3px solid var(--border); color: var(--muted); }
-      .mail-document { min-height: calc(100vh - 48px); }
+      blockquote {
+        margin: 1.2rem 0;
+        padding-left: 1rem;
+        border-left: 3px solid var(--line);
+        color: var(--muted);
+      }
+      .mail-document { min-height: calc(100vh - 60px); }
     </style>
   </head>
   <body>
@@ -119,34 +132,27 @@ function buildReaderSrcdoc(html: string, inlineImages: MailInlineImage[] | undef
 </html>`;
 }
 
-function renderReaderEmpty(state: WebConsoleState): string {
+function renderReaderIntro(state: WebConsoleState): string {
   if (!state.selectedMailbox) {
     return `
-      <section class="empty-panel">
-        <h2>还没有可读邮箱</h2>
-        <p>先在 Slack 里运行 <code>/mail connect graph</code>，连接至少一个 Outlook 账号。</p>
+      <section class="reader-intro">
+        <div class="reader-kicker">阅读区</div>
+        <h1>先连接一个邮箱</h1>
+        <p>先在 Slack 里运行 <code>/mail connect graph</code>，接入至少一个 Outlook 账号后，这里才会显示消息阅读区。</p>
       </section>
     `;
   }
 
   return `
-    <section class="reader-placeholder">
-      <div class="reader-placeholder-header">
-        <div>
-          <div class="eyebrow">Reading pane</div>
-          <h2>${escapeHtml(state.selectedMailbox.connection.displayName || state.selectedMailbox.connection.emailAddress)}</h2>
-          <p>${escapeHtml(state.selectedMailbox.connection.emailAddress)}</p>
-        </div>
-        <span class="pill">${escapeHtml(providerLabel(state.selectedMailbox))}</span>
-      </div>
-      <div class="reader-summary-grid">
-        <div><span>当前文件夹</span><strong>${escapeHtml(formatFolderLabel(state.selectedFolder))}</strong></div>
-        <div><span>消息数量</span><strong>${state.messages.length}</strong></div>
-        <div><span>已监控文件夹</span><strong>${escapeHtml(monitoredFoldersText(state.selectedMailbox))}</strong></div>
+    <section class="reader-intro">
+      <div class="reader-kicker">阅读区</div>
+      <h1>选择一封邮件开始阅读</h1>
+      <p>消息流会先快速加载，正文、附件和内联图片只在你真正点开邮件时再读取，避免整个界面一起变慢。</p>
+      <div class="reader-inline-meta">
+        <div><span>邮箱</span><strong>${escapeHtml(state.selectedMailbox.connection.displayName || state.selectedMailbox.connection.emailAddress)}</strong></div>
+        <div><span>文件夹</span><strong>${escapeHtml(formatFolderLabel(state.selectedFolder))}</strong></div>
         <div><span>Slack 路由</span><strong>${escapeHtml(state.selectedMailbox.route?.slackChannelName || state.selectedMailbox.route?.slackChannelId || "未配置")}</strong></div>
-      </div>
-      <div class="reader-note">
-        <p>为减少等待时间，页面现在只在你真正选择邮件后才加载正文、附件和内联图片。</p>
+        <div><span>监控范围</span><strong>${escapeHtml(monitoredFoldersText(state.selectedMailbox))}</strong></div>
       </div>
     </section>
   `;
@@ -154,7 +160,7 @@ function renderReaderEmpty(state: WebConsoleState): string {
 
 function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleState): string {
   if (!detail) {
-    return renderReaderEmpty(state);
+    return renderReaderIntro(state);
   }
 
   const attachments = detail.message.attachments ?? [];
@@ -163,7 +169,7 @@ function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleSta
     ? `
       <iframe
         class="mail-body-frame"
-        title="Mail content"
+        title="邮件正文"
         loading="lazy"
         sandbox="allow-popups allow-popups-to-escape-sandbox"
         srcdoc="${escapeHtml(buildReaderSrcdoc(htmlBody, detail.message.inlineImages))}"
@@ -172,22 +178,22 @@ function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleSta
     : `<pre class="mail-body-text">${escapeHtml(detail.bodyPlainText || "(无可用正文)")}</pre>`;
 
   return `
-    <article class="reader-article">
-      <header class="reader-article-header">
-        <div class="eyebrow">${escapeHtml(formatFolderLabel(detail.message.folderKind, detail.message.folderName))}</div>
+    <article class="reader-document">
+      <header class="reader-header">
+        <div class="reader-kicker">${escapeHtml(formatFolderLabel(detail.message.folderKind, detail.message.folderName))}</div>
         <div class="reader-title-row">
-          <h1>${escapeHtml(detail.message.subject || "(no subject)")}</h1>
+          <h1>${escapeHtml(detail.message.subject || "(无主题)")}</h1>
           ${detail.message.webLink
-            ? `<a class="action-link" href="${escapeHtml(detail.message.webLink)}" target="_blank" rel="noopener noreferrer">Open in Outlook</a>`
+            ? `<a class="reader-action" href="${escapeHtml(detail.message.webLink)}" target="_blank" rel="noopener noreferrer">在 Outlook 中打开</a>`
             : ""}
         </div>
-        <div class="reader-subtitle">
-          <span>${escapeHtml(detail.message.fromName || detail.message.fromAddress || "Unknown sender")}</span>
+        <div class="reader-byline">
+          <span>${escapeHtml(detail.message.fromName || detail.message.fromAddress || "未知发件人")}</span>
           <span>${escapeHtml(detail.message.fromAddress || "")}</span>
         </div>
       </header>
 
-      <section class="reader-meta-grid">
+      <section class="reader-statline">
         <div><span>接收时间</span><strong>${escapeHtml(fmtTime(detail.message.receivedDateTime))}</strong></div>
         <div><span>附件数量</span><strong>${attachments.length}</strong></div>
         <div><span>内联图片</span><strong>${detail.message.inlineImages?.length ?? 0}</strong></div>
@@ -196,19 +202,24 @@ function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleSta
 
       ${attachments.length > 0
         ? `
-          <section class="attachment-section">
-            <div class="section-title">Attachments</div>
+          <section class="reader-section">
+            <div class="reader-section-title">附件</div>
             <ul class="attachment-list">
               ${attachments.map((attachment) =>
-                `<li>${escapeHtml(attachment.name)}${attachment.contentType ? ` <span>· ${escapeHtml(attachment.contentType)}</span>` : ""}${attachment.size ? ` <span>· ${Math.max(1, Math.round(attachment.size / 1024))} KB</span>` : ""}</li>`
+                `<li>
+                  <strong>${escapeHtml(attachment.name)}</strong>
+                  <span>${attachment.contentType ? escapeHtml(attachment.contentType) : "未知类型"}</span>
+                  <span>${attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : "-"}</span>
+                </li>`
               ).join("")}
             </ul>
           </section>
         `
-        : ""}
+        : ""
+      }
 
-      <section class="body-section">
-        <div class="section-title">Body</div>
+      <section class="reader-section reader-section-body">
+        <div class="reader-section-title">正文</div>
         ${bodyBlock}
       </section>
     </article>
@@ -226,28 +237,28 @@ function renderMailboxItem(
       mailboxId: mailbox.connection.mailboxId,
       folder: selectedFolder,
     })}">
-      <div class="mailbox-title-row">
-        <span class="mailbox-title">${escapeHtml(mailbox.connection.displayName || mailbox.connection.emailAddress)}</span>
-        <span class="pill">${escapeHtml(providerLabel(mailbox))}</span>
-      </div>
+      <div class="mailbox-title">${escapeHtml(mailbox.connection.displayName || mailbox.connection.emailAddress)}</div>
       <div class="mailbox-subtitle">${escapeHtml(mailbox.connection.emailAddress)}</div>
-      <div class="mailbox-meta-row">
-        <span>${escapeHtml(mailbox.connection.status)}</span>
+      <div class="mailbox-meta">
+        <span>${escapeHtml(providerLabel(mailbox))}</span>
         <span>${escapeHtml(mailbox.route?.slackChannelName || mailbox.route?.slackChannelId || "未配置")}</span>
       </div>
     </a>
   `;
 }
 
-function renderMessageItem(state: WebConsoleState, message: {
-  messageId: string;
-  subject: string;
-  fromName?: string;
-  fromAddress?: string;
-  bodyPreview?: string;
-  receivedDateTime?: string;
-  hasAttachments?: boolean;
-}): string {
+function renderMessageItem(
+  state: WebConsoleState,
+  message: {
+    messageId: string;
+    subject: string;
+    fromName?: string;
+    fromAddress?: string;
+    bodyPreview?: string;
+    receivedDateTime?: string;
+    hasAttachments?: boolean;
+  },
+): string {
   const selectedMessageId = state.selectedMessage?.message.messageId;
   const active = message.messageId === selectedMessageId;
   return `
@@ -255,23 +266,60 @@ function renderMessageItem(state: WebConsoleState, message: {
       mailboxId: state.selectedMailbox?.connection.mailboxId,
       folder: state.selectedFolder,
       messageId: message.messageId,
+      pageCursor: state.currentPageCursor,
+      page: state.pageIndex > 1 ? state.pageIndex : undefined,
     })}">
-      <div class="message-item-top">
-        <span class="message-subject">${escapeHtml(message.subject || "(no subject)")}</span>
+      <div class="message-row-top">
+        <span class="message-subject">${escapeHtml(message.subject || "(无主题)")}</span>
         <span class="message-time">${escapeHtml(fmtTime(message.receivedDateTime))}</span>
       </div>
-      <div class="message-sender">${escapeHtml(message.fromName || message.fromAddress || "Unknown sender")}</div>
+      <div class="message-sender">${escapeHtml(message.fromName || message.fromAddress || "未知发件人")}</div>
       <div class="message-preview">${escapeHtml(message.bodyPreview || "(无预览)")}</div>
-      <div class="message-flags">${message.hasAttachments ? "附件" : ""}</div>
+      ${message.hasAttachments ? `<div class="message-meta">含附件</div>` : ""}
     </a>
+  `;
+}
+
+function renderMessagePagination(state: WebConsoleState): string {
+  if (!state.selectedMailbox) return "";
+  if (!state.nextPageCursor && !state.hasPreviousPage) return "";
+
+  const latestHref = appHref({
+    mailboxId: state.selectedMailbox.connection.mailboxId,
+    folder: state.selectedFolder,
+    messageId: state.selectedMessage?.message.messageId,
+  });
+  const olderHref = state.nextPageCursor
+    ? appHref({
+      mailboxId: state.selectedMailbox.connection.mailboxId,
+      folder: state.selectedFolder,
+      messageId: state.selectedMessage?.message.messageId,
+      pageCursor: state.nextPageCursor,
+      page: state.pageIndex + 1,
+    })
+    : null;
+
+  return `
+    <div class="stream-pagination">
+      <div class="stream-pagination-copy">
+        <span class="section-label">分页</span>
+        <strong>${state.pageIndex === 1 ? "最新邮件" : `第 ${state.pageIndex} 页`}</strong>
+      </div>
+      <div class="stream-pagination-actions">
+        ${state.hasPreviousPage ? `<a class="stream-page-link" href="${latestHref}">回到最新</a>` : ""}
+        ${olderHref
+          ? `<a class="stream-page-link is-primary" href="${olderHref}">更早邮件</a>`
+          : `<span class="stream-page-link is-disabled">没有更早邮件了</span>`}
+      </div>
+    </div>
   `;
 }
 
 function renderEmptyMailboxes(): string {
   return `
-    <section class="empty-panel compact">
+    <section class="empty-note">
       <h3>暂无邮箱</h3>
-      <p>在 Slack 执行 <code>/mail connect graph</code> 后，这里会自动出现邮箱列表。</p>
+      <p>先在 Slack 里执行 <code>/mail connect graph</code>，连接后这里会自动出现账号列表。</p>
     </section>
   `;
 }
@@ -287,29 +335,39 @@ function renderAppShell(title: string, body: string): Response {
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0a0f1a;
-        --surface: #0f1724;
-        --surface-2: #121c2b;
-        --surface-3: #172235;
-        --line: rgba(148, 163, 184, 0.18);
-        --line-strong: rgba(148, 163, 184, 0.26);
-        --text: #edf3fb;
-        --muted: #95a6be;
-        --accent: #67a7ff;
-        --accent-soft: rgba(103, 167, 255, 0.12);
-        --accent-line: rgba(103, 167, 255, 0.28);
-        --danger: #ff8f8f;
-        --success: #75d0a2;
+        --bg: #050810;
+        --shell: #0a111b;
+        --shell-2: #0d1521;
+        --shell-3: #101927;
+        --line: rgba(148, 163, 184, 0.12);
+        --line-strong: rgba(148, 163, 184, 0.24);
+        --text: #edf4ff;
+        --muted: #92a5c0;
+        --accent: #7aaeff;
+        --accent-soft: rgba(122, 174, 255, 0.12);
+        --accent-strong: rgba(122, 174, 255, 0.22);
+        --reader-bg: #eef3f8;
+        --paper: #ffffff;
+        --paper-soft: #fbfdff;
+        --reader-line: #d9e3ef;
+        --reader-text: #111827;
+        --reader-muted: #5f7086;
+        --shadow: 0 30px 100px rgba(15, 23, 42, 0.10), 0 10px 30px rgba(15, 23, 42, 0.06);
       }
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
         min-height: 100%;
-        background: radial-gradient(circle at top left, #15233a 0%, var(--bg) 34%), var(--bg);
+        background:
+          radial-gradient(circle at top left, rgba(74, 116, 196, 0.14), transparent 24%),
+          linear-gradient(180deg, #07101a 0%, var(--bg) 100%);
         color: var(--text);
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       }
-      body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+      body {
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
       a { color: inherit; text-decoration: none; }
       code {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
@@ -318,399 +376,598 @@ function renderAppShell(title: string, body: string): Response {
       .app-shell {
         min-height: 100vh;
         display: grid;
-        grid-template-rows: 64px 1fr;
+        grid-template-rows: 68px 1fr;
       }
       .topbar {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        padding: 0 20px;
+        padding: 0 22px;
         border-bottom: 1px solid var(--line);
-        background: rgba(10, 15, 26, 0.96);
+        background: rgba(7, 11, 18, 0.96);
       }
-      .brand-stack { display: grid; gap: 2px; }
-      .brand-title {
-        font-size: 17px;
-        font-weight: 700;
-        letter-spacing: 0.01em;
-      }
-      .brand-subtitle {
-        font-size: 12px;
-        color: var(--muted);
-      }
-      .toolbar-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      .pill {
-        display: inline-flex;
+      .brand {
+        display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 5px 10px;
+        gap: 12px;
+      }
+      .brand-mark {
+        width: 11px;
+        height: 11px;
         border-radius: 999px;
-        border: 1px solid var(--line);
-        color: var(--muted);
-        font-size: 12px;
-        white-space: nowrap;
+        background: linear-gradient(135deg, #bfd8ff 0%, var(--accent) 100%);
+        box-shadow: 0 0 0 10px rgba(122, 174, 255, 0.08);
       }
-      .workspace {
-        min-height: calc(100vh - 64px);
+      .brand-copy {
         display: grid;
-        grid-template-columns: 276px 390px minmax(420px, 1fr);
+        gap: 2px;
       }
-      .pane {
-        min-height: calc(100vh - 64px);
-        overflow: auto;
-        background: rgba(15, 23, 36, 0.9);
-        contain: content;
-        overscroll-behavior: contain;
-      }
-      .pane + .pane { border-left: 1px solid var(--line); }
-      .rail { padding: 16px 14px 24px; }
-      .stream { padding: 16px 0 24px; }
-      .reader { padding: 22px 28px 30px; background: linear-gradient(180deg, rgba(18, 28, 43, 0.96) 0%, rgba(14, 22, 34, 0.96) 100%); }
-      .section-heading {
-        padding: 0 14px 12px;
+      .brand-kicker {
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         color: var(--muted);
       }
-      .mailbox-list,
+      .brand-title {
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .topbar-meta {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .meta-block {
+        display: grid;
+        gap: 1px;
+      }
+      .meta-block span {
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .meta-block strong {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .ghost-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 15px;
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--text);
+        cursor: pointer;
+      }
+      .workspace {
+        min-height: calc(100vh - 68px);
+        display: grid;
+        grid-template-columns: 216px 344px minmax(0, 1fr);
+      }
+      .pane {
+        min-height: calc(100vh - 68px);
+        overflow: auto;
+        scrollbar-gutter: stable;
+        contain: content;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+      }
+      .pane + .pane { border-left: 1px solid var(--line); }
+      .accounts-pane {
+        padding: 0 16px 28px;
+        background: var(--shell);
+      }
+      .stream-pane {
+        padding: 0 0 30px;
+        background: var(--shell-2);
+      }
+      .reader-pane {
+        background: linear-gradient(180deg, #eff4fa 0%, var(--reader-bg) 100%);
+        color: var(--reader-text);
+      }
+      .section-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .accounts-head,
+      .stream-head {
+        display: grid;
+        gap: 10px;
+        position: sticky;
+        top: 0;
+        z-index: 4;
+        padding: 22px 18px 16px;
+      }
+      .accounts-head {
+        background: linear-gradient(180deg, rgba(8, 12, 19, 0.98) 0%, rgba(8, 12, 19, 0.92) 72%, rgba(8, 12, 19, 0) 100%);
+      }
+      .stream-head {
+        background: linear-gradient(180deg, rgba(13, 21, 33, 0.99) 0%, rgba(13, 21, 33, 0.92) 72%, rgba(13, 21, 33, 0) 100%);
+      }
+      .accounts-head h2,
+      .stream-head h2,
+      .empty-note h3,
+      .login-panel h1,
+      .reader-intro h1,
+      .reader-title-row h1 {
+        margin: 0;
+      }
+      .accounts-head h2,
+      .stream-head h2 {
+        font-size: 21px;
+        letter-spacing: -0.03em;
+      }
+      .accounts-head p,
+      .stream-head p,
+      .empty-note p,
+      .login-panel p,
+      .reader-intro p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .account-list,
       .message-list {
         display: grid;
         gap: 4px;
+        content-visibility: auto;
+        contain-intrinsic-size: 720px;
       }
       .mailbox-item,
       .message-item {
         position: relative;
         display: grid;
-        gap: 6px;
-        transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+        gap: 7px;
+        transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
         content-visibility: auto;
-        contain-intrinsic-size: 120px;
+        contain-intrinsic-size: 96px;
       }
       .mailbox-item {
-        padding: 12px 12px 12px 14px;
-        border-radius: 14px;
-        border: 1px solid transparent;
+        padding: 16px 14px;
+        border-radius: 18px;
       }
       .message-item {
-        padding: 13px 18px 14px 18px;
-        border-top: 1px solid var(--line);
+        padding: 18px 20px 16px 24px;
+        border-bottom: 1px solid var(--line);
       }
       .mailbox-item::before,
       .message-item::before {
         content: "";
         position: absolute;
         left: 0;
-        top: 10px;
-        bottom: 10px;
-        width: 2px;
+        top: 16px;
+        bottom: 16px;
+        width: 3px;
         border-radius: 999px;
         background: transparent;
       }
       .mailbox-item:hover,
       .message-item:hover {
-        background: rgba(255,255,255,0.02);
+        background: rgba(255, 255, 255, 0.03);
+        transform: translateX(1px);
       }
       .mailbox-item.is-active,
       .message-item.is-active {
-        background: var(--accent-soft);
-        border-color: var(--accent-line);
+        background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.03) 100%);
       }
       .mailbox-item.is-active::before,
-      .message-item.is-active::before {
-        background: var(--accent);
+      .message-item.is-active::before { background: var(--accent); }
+      .mailbox-title,
+      .message-subject {
+        font-size: 15px;
+        font-weight: 650;
+        line-height: 1.35;
       }
-      .mailbox-title-row,
-      .message-item-top,
-      .reader-title-row,
-      .reader-placeholder-header {
+      .mailbox-subtitle,
+      .mailbox-meta,
+      .message-sender,
+      .message-preview,
+      .message-time,
+      .message-meta {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .mailbox-subtitle,
+      .message-sender,
+      .message-preview { line-height: 1.5; }
+      .mailbox-meta,
+      .message-row-top {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
       }
-      .mailbox-title,
-      .message-subject,
-      .reader-article h1,
-      .reader-placeholder h2 {
-        font-weight: 700;
-      }
-      .mailbox-title,
-      .message-subject { line-height: 1.35; }
-      .mailbox-subtitle,
-      .mailbox-meta-row,
-      .message-sender,
-      .message-preview,
-      .reader-subtitle,
-      .reader-note,
-      .empty-panel p,
-      .login-panel p {
-        color: var(--muted);
-      }
-      .mailbox-subtitle,
-      .mailbox-meta-row,
-      .message-sender,
-      .message-preview,
-      .message-time,
-      .message-flags {
-        font-size: 13px;
-      }
-      .mailbox-subtitle,
-      .message-sender,
-      .message-preview {
-        line-height: 1.45;
-      }
-      .mailbox-meta-row {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-      }
-      .stream-header {
-        display: grid;
-        gap: 12px;
-        padding: 0 14px 14px;
-        border-bottom: 1px solid var(--line);
-      }
-      .stream-title-row {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        gap: 16px;
-      }
-      .stream-title {
-        display: grid;
-        gap: 4px;
-      }
-      .stream-title h2,
-      .reader-placeholder h2,
-      .empty-panel h3,
-      .login-panel h1,
-      .reader-article h1 {
-        margin: 0;
-      }
-      .stream-title p,
-      .reader-placeholder-header p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .tab-row { display: flex; gap: 8px; flex-wrap: wrap; }
-      .tab {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 82px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        border: 1px solid var(--line);
-        color: var(--muted);
-        font-size: 13px;
-      }
-      .tab.is-active {
-        background: var(--accent-soft);
-        border-color: var(--accent-line);
-        color: var(--text);
-      }
-      .message-time { color: var(--muted); white-space: nowrap; }
+      .message-time { white-space: nowrap; }
       .message-preview {
         display: -webkit-box;
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         overflow: hidden;
       }
-      .message-flags {
-        min-height: 16px;
-        color: var(--success);
-      }
-      .reader-placeholder,
-      .reader-article,
-      .empty-panel {
-        display: grid;
-        gap: 18px;
-      }
-      .eyebrow {
+      .message-meta {
+        width: fit-content;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
         font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
+      }
+      .folder-tabs {
+        display: flex;
+        gap: 22px;
+        align-items: center;
+      }
+      .folder-tab {
+        position: relative;
+        padding: 6px 0 10px;
+        font-size: 13px;
         color: var(--muted);
       }
-      .reader-placeholder-header p,
-      .reader-subtitle {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        font-size: 14px;
+      .folder-tab.is-active {
+        color: var(--text);
       }
-      .reader-summary-grid,
-      .reader-meta-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 12px 16px;
+      .folder-tab.is-active::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 2px;
+        border-radius: 999px;
+        background: var(--accent);
       }
-      .reader-summary-grid > div,
-      .reader-meta-grid > div {
-        padding: 14px 16px;
-        border-radius: 14px;
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.02);
+      .stream-headline {
         display: grid;
         gap: 6px;
       }
-      .reader-summary-grid span,
-      .reader-meta-grid span {
-        font-size: 12px;
+      .stream-meta {
+        font-size: 13px;
         color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
       }
-      .reader-summary-grid strong,
-      .reader-meta-grid strong {
-        font-size: 14px;
+      .stream-alert {
+        margin: 0 18px 14px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(220, 38, 38, 0.24);
+        background: rgba(220, 38, 38, 0.08);
+        color: #fecaca;
+        font-size: 13px;
+      }
+      .stream-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin: 16px 18px 0;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .stream-pagination-copy {
+        display: grid;
+        gap: 4px;
+      }
+      .stream-pagination-copy strong {
+        font-size: 13px;
+        font-weight: 600;
         color: var(--text);
       }
-      .reader-note {
-        padding: 16px 18px;
-        border-radius: 14px;
-        border: 1px dashed var(--line-strong);
-        background: rgba(255,255,255,0.015);
-        line-height: 1.6;
+      .stream-pagination-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
       }
-      .reader-article-header {
-        display: grid;
-        gap: 12px;
-      }
-      .reader-title-row h1 {
-        font-size: 32px;
-        line-height: 1.1;
-        letter-spacing: -0.02em;
-      }
-      .reader-subtitle { font-size: 14px; }
-      .action-link,
-      .button-link,
-      .button-ghost {
+      .stream-page-link {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 9px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--line);
+        min-height: 36px;
+        padding: 0 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line-strong);
+        color: var(--text);
+        font-size: 13px;
+      }
+      .stream-page-link.is-primary {
+        background: rgba(255, 255, 255, 0.04);
+      }
+      .stream-page-link.is-disabled {
+        color: var(--muted);
+        border-style: dashed;
+      }
+      .reader-wrap {
+        min-height: calc(100vh - 68px);
+        padding: 36px 42px 56px;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+      }
+      .reader-intro,
+      .reader-document {
+        display: grid;
+        gap: 28px;
+        width: min(1080px, 100%);
+        padding: 46px 54px 60px;
+        background: linear-gradient(180deg, var(--paper) 0%, var(--paper-soft) 100%);
+        border-radius: 32px;
+        box-shadow: 0 16px 48px rgba(15, 23, 42, 0.08);
+        position: relative;
+        overflow: hidden;
+      }
+      .reader-intro::before,
+      .reader-document::before {
+        content: "";
+        position: absolute;
+        inset: 0 0 auto 0;
+        height: 112px;
+        background: linear-gradient(180deg, rgba(122, 174, 255, 0.10) 0%, rgba(122, 174, 255, 0) 100%);
+        pointer-events: none;
+      }
+      .reader-intro > *,
+      .reader-document > * {
+        position: relative;
+        z-index: 1;
+      }
+      .reader-kicker {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #466a96;
+      }
+      .reader-intro h1,
+      .reader-title-row h1 {
+        font-size: clamp(38px, 4.2vw, 62px);
+        line-height: 1.04;
+        letter-spacing: -0.035em;
+        color: var(--reader-text);
+        max-width: 14ch;
+      }
+      .reader-intro p,
+      .reader-byline {
+        font-size: 15px;
+        color: var(--reader-muted);
+        line-height: 1.7;
+        max-width: 70ch;
+      }
+      .reader-inline-meta,
+      .reader-statline {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        border-top: 1px solid var(--reader-line);
+        border-bottom: 1px solid var(--reader-line);
+        background: rgba(250, 252, 255, 0.8);
+      }
+      .reader-inline-meta > div,
+      .reader-statline > div {
+        display: grid;
+        gap: 6px;
+        padding: 16px 0;
+      }
+      .reader-inline-meta > div + div,
+      .reader-statline > div + div {
+        padding-left: 18px;
+        margin-left: 18px;
+        border-left: 1px solid var(--reader-line);
+      }
+      .reader-inline-meta span,
+      .reader-statline span {
+        font-size: 11px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--reader-muted);
+      }
+      .reader-inline-meta strong,
+      .reader-statline strong {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--reader-text);
+      }
+      .reader-header {
+        display: grid;
+        gap: 18px;
+      }
+      .reader-title-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+      }
+      .reader-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 11px 16px;
+        border-radius: 999px;
+        border: 1px solid #0f172a;
+        background: #0f172a;
+        color: #f8fbff;
         font-size: 13px;
         white-space: nowrap;
       }
-      .action-link,
-      .button-link {
-        background: var(--accent-soft);
-        border-color: var(--accent-line);
+      .reader-byline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
       }
-      .button-ghost { color: var(--muted); background: transparent; }
-      .section-title {
+      .reader-section {
+        display: grid;
+        gap: 12px;
+      }
+      .reader-section-title {
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: var(--muted);
+        color: var(--reader-muted);
       }
-      .attachment-section,
-      .body-section { display: grid; gap: 12px; }
       .attachment-list {
         list-style: none;
         margin: 0;
         padding: 0;
-        display: grid;
-        gap: 8px;
+        border-top: 1px solid var(--reader-line);
       }
       .attachment-list li {
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.02);
-        color: var(--text);
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 18px;
+        align-items: center;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--reader-line);
+        color: var(--reader-text);
+        font-size: 14px;
+      }
+      .attachment-list li span {
+        color: var(--reader-muted);
         font-size: 13px;
       }
-      .attachment-list li span { color: var(--muted); }
       .mail-body-frame {
         width: 100%;
-        min-height: 680px;
-        border: 1px solid var(--line-strong);
-        border-radius: 18px;
+        min-height: 840px;
+        border: 0;
+        border-radius: 22px;
         background: #ffffff;
+        box-shadow: inset 0 0 0 1px var(--reader-line);
       }
       .mail-body-text {
         margin: 0;
-        padding: 22px;
+        padding: 30px 32px;
         white-space: pre-wrap;
         word-break: break-word;
-        line-height: 1.7;
-        color: var(--text);
-        border-radius: 18px;
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.02);
+        line-height: 1.8;
+        color: var(--reader-text);
+        background: #ffffff;
+        border: 0;
+        border-radius: 22px;
+        box-shadow: inset 0 0 0 1px var(--reader-line);
+      }
+      .empty-note {
+        display: grid;
+        gap: 8px;
+        padding: 20px 18px 0;
       }
       .login-page {
         min-height: 100vh;
         display: grid;
         place-items: center;
-        padding: 24px;
+        padding: 28px;
+        background: radial-gradient(circle at 50% 0%, rgba(122, 174, 255, 0.10), transparent 28%);
       }
       .login-panel {
-        width: min(420px, 100%);
+        width: min(520px, 100%);
         display: grid;
-        gap: 16px;
-        padding: 28px;
-        border-radius: 22px;
-        border: 1px solid var(--line);
-        background: rgba(15, 23, 36, 0.92);
+        gap: 18px;
+        padding: 42px;
+        border-radius: 30px;
+        border: 1px solid var(--line-strong);
+        background: linear-gradient(180deg, rgba(13, 20, 32, 0.92) 0%, rgba(10, 16, 26, 0.98) 100%);
+        box-shadow: 0 18px 52px rgba(0, 0, 0, 0.22);
       }
-      .login-panel form { display: grid; gap: 12px; }
-      .input {
+      .login-panel form {
+        display: grid;
+        gap: 12px;
+      }
+      .login-input {
         width: 100%;
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid var(--line);
-        background: rgba(255,255,255,0.025);
+        padding: 14px 16px;
+        border-radius: 16px;
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.03);
         color: var(--text);
         outline: none;
       }
-      .footer-note {
-        padding: 18px 14px 0;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.65;
+      .login-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 14px 18px;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #08111e;
+        border: 0;
+        font-weight: 600;
+        cursor: pointer;
       }
-      .empty-panel {
-        min-height: 220px;
-        place-content: center;
-        text-align: center;
-        color: var(--muted);
-        padding: 24px;
-      }
-      .empty-panel.compact { min-height: 180px; }
-      .alert {
-        margin: 0 14px 14px;
+      .login-alert {
         padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid rgba(255, 143, 143, 0.22);
-        background: rgba(255, 143, 143, 0.08);
-        color: #ffd0d0;
+        border: 1px solid rgba(220, 38, 38, 0.24);
+        background: rgba(220, 38, 38, 0.08);
+        color: #fecaca;
         font-size: 13px;
       }
-      .reader .alert { margin: 0 0 18px; }
+      .login-muted {
+        color: var(--muted);
+        line-height: 1.7;
+      }
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { transition: none !important; animation: none !important; }
       }
-      @media (max-width: 1180px) {
-        .workspace { grid-template-columns: 252px 336px minmax(320px, 1fr); }
-        .reader-title-row h1 { font-size: 28px; }
+      @media (max-width: 1280px) {
+        .workspace { grid-template-columns: 204px 304px minmax(0, 1fr); }
+        .reader-wrap { padding: 28px 28px 42px; }
+        .reader-intro,
+        .reader-document { padding: 38px 40px 46px; }
       }
-      @media (max-width: 920px) {
+      @media (max-width: 960px) {
+        .app-shell { grid-template-rows: auto 1fr; }
+        .topbar {
+          padding: 14px 16px;
+          align-items: flex-start;
+        }
         .workspace { grid-template-columns: 1fr; }
         .pane { min-height: auto; }
         .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
-        .reader { padding: 18px; }
-        .mail-body-frame { min-height: 420px; }
+        .reader-wrap { min-height: auto; }
+        .reader-inline-meta,
+        .reader-statline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .reader-inline-meta > div:nth-child(3),
+        .reader-statline > div:nth-child(3) { padding-left: 0; margin-left: 0; border-left: 0; }
+        .mail-body-frame { min-height: 520px; }
+        .stream-pagination {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+      @media (max-width: 720px) {
+        .topbar-meta {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          width: 100%;
+        }
+        .ghost-button { width: fit-content; }
+        .reader-wrap { padding: 18px 16px 28px; }
+        .reader-intro,
+        .reader-document {
+          padding: 28px 22px 34px;
+          border-radius: 24px;
+          gap: 22px;
+        }
+        .reader-title-row {
+          flex-direction: column;
+          gap: 16px;
+        }
+        .reader-inline-meta,
+        .reader-statline { grid-template-columns: 1fr; }
+        .reader-inline-meta > div + div,
+        .reader-statline > div + div {
+          padding-left: 0;
+          margin-left: 0;
+          border-left: 0;
+        }
+        .mail-body-frame { min-height: 440px; border-radius: 18px; }
+        .mail-body-text { border-radius: 18px; }
       }
     </style>
   </head>
@@ -731,24 +988,18 @@ export function renderLoginPage(input: {
     `
       <div class="login-page">
         <section class="login-panel">
-          <div>
-            <div class="eyebrow">Mail Console</div>
-            <h1>登录只读控制台</h1>
-          </div>
-          <p>用管理员密码进入多账号 Outlook 阅读台。这里专注于查看邮箱状态、消息列表和正文，不承担管理写操作。</p>
-          ${
-            input.configured
-              ? `
-                ${input.error ? `<div class="alert" style="margin:0;">${escapeHtml(input.error)}</div>` : ""}
-                <form method="POST" action="/app/login">
-                  <input class="input" type="password" name="password" placeholder="输入管理员密码" autocomplete="current-password" required />
-                  <button class="button-link" type="submit">进入 Mail Console</button>
-                </form>
-              `
-              : `
-                <div class="alert" style="margin:0;">当前未配置 <code>WEB_ADMIN_PASSWORD</code>，Web 控制台尚未启用。</div>
-              `
-          }
+          <div class="section-label">邮件工作台</div>
+          <h1>登录只读邮件工作台</h1>
+          <p class="login-muted">这里专注于多账号 Outlook 阅读。连接、路由和同步管理仍建议在 Slack 中完成。</p>
+          ${input.configured
+            ? `
+              ${input.error ? `<div class="login-alert">${escapeHtml(input.error)}</div>` : ""}
+              <form method="POST" action="/app/login">
+                <input class="login-input" type="password" name="password" placeholder="输入管理员密码" autocomplete="current-password" required />
+                <button class="login-button" type="submit">进入邮件工作台</button>
+              </form>
+            `
+            : `<div class="login-alert">当前未配置 <code>WEB_ADMIN_PASSWORD</code>，Web 控制台尚未启用。</div>`}
         </section>
       </div>
     `,
@@ -758,75 +1009,85 @@ export function renderLoginPage(input: {
 export function renderAppPage(state: WebConsoleState): Response {
   const selectedMailboxId = state.selectedMailbox?.connection.mailboxId;
   const selectedFolder = state.selectedFolder;
-  const selectedMailboxLabel = state.selectedMailbox?.connection.displayName || state.selectedMailbox?.connection.emailAddress || "No mailbox";
+  const mailboxLabel = state.selectedMailbox?.connection.displayName || state.selectedMailbox?.connection.emailAddress || "No mailbox";
 
   return renderAppShell(
     "Mail Console",
     `
       <div class="app-shell">
         <header class="topbar">
-          <div class="brand-stack">
-            <div class="brand-title">Mail Console</div>
-            <div class="brand-subtitle">多账号 Outlook 只读工作台</div>
+          <div class="brand">
+            <div class="brand-mark"></div>
+            <div class="brand-copy">
+              <div class="brand-kicker">邮件工作台</div>
+              <div class="brand-title">多账号 Outlook 阅读台</div>
+            </div>
           </div>
-          <div class="toolbar-meta">
-            <span class="pill">${state.mailboxes.length} mailboxes</span>
-            <span class="pill">${escapeHtml(selectedMailboxLabel)}</span>
-            <span class="pill">${escapeHtml(formatFolderLabel(selectedFolder))}</span>
+          <div class="topbar-meta">
+            <div class="meta-block">
+              <span>当前邮箱</span>
+              <strong>${escapeHtml(mailboxLabel)}</strong>
+            </div>
+            <div class="meta-block">
+              <span>当前文件夹</span>
+              <strong>${escapeHtml(formatFolderLabel(selectedFolder))}</strong>
+            </div>
+            <div class="meta-block">
+              <span>已载入</span>
+              <strong>${state.messages.length} 封邮件${state.pageIndex > 1 ? ` · 第 ${state.pageIndex} 页` : ""}</strong>
+            </div>
             <form method="POST" action="/app/logout">
-              <button class="button-ghost" type="submit">退出</button>
+              <button class="ghost-button" type="submit">退出</button>
             </form>
           </div>
         </header>
 
         <div class="workspace">
-          <aside class="pane rail">
-            <div class="section-heading">Mailboxes</div>
-            ${
-              state.mailboxes.length > 0
-                ? `<nav class="mailbox-list">${state.mailboxes.map((mailbox) => renderMailboxItem(mailbox, selectedMailboxId, selectedFolder)).join("")}</nav>`
-                : renderEmptyMailboxes()
-            }
-            <div class="footer-note">
-              管理动作仍建议在 Slack 完成：<br />
-              <code>/mail connect graph</code><br />
-              <code>/mail route &lt;mailbox&gt; &lt;#channel&gt;</code><br />
-              <code>/mail provider &lt;mailbox&gt; graph</code>
+          <aside class="pane accounts-pane">
+            <div class="accounts-head">
+              <div class="section-label">账号</div>
+              <h2>邮箱列表</h2>
+              <p>已连接邮箱与默认 Slack 路由。</p>
             </div>
+            ${state.mailboxes.length > 0
+              ? `<nav class="account-list">${state.mailboxes.map((mailbox) => renderMailboxItem(mailbox, selectedMailboxId, selectedFolder)).join("")}</nav>`
+              : renderEmptyMailboxes()}
           </aside>
 
-          <section class="pane stream">
-            <div class="stream-header">
-              <div class="stream-title-row">
-                <div class="stream-title">
-                  <h2>${escapeHtml(selectedMailboxLabel)}</h2>
-                  <p>${state.selectedMailbox ? escapeHtml(state.selectedMailbox.connection.emailAddress) : "连接邮箱后可在这里查看邮件流。"}</p>
-                </div>
-                ${state.selectedMailbox ? `<span class="pill">${escapeHtml(providerLabel(state.selectedMailbox))}</span>` : ""}
+          <section class="pane stream-pane">
+            <div class="stream-head">
+              <div class="section-label">消息流</div>
+              <div class="stream-headline">
+                <h2>${escapeHtml(mailboxLabel)}</h2>
+                <div class="stream-meta">${state.selectedMailbox ? escapeHtml(state.selectedMailbox.connection.emailAddress) : "连接邮箱后可在这里查看消息流。"}</div>
               </div>
               ${state.selectedMailbox
                 ? `
-                  <div class="tab-row">
-                    <a class="tab${selectedFolder === "inbox" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "inbox" })}">Inbox</a>
-                    <a class="tab${selectedFolder === "junk" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "junk" })}">Junk</a>
+                  <div class="folder-tabs">
+                    <a class="folder-tab${selectedFolder === "inbox" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "inbox" })}">收件箱</a>
+                    <a class="folder-tab${selectedFolder === "junk" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "junk" })}">垃圾邮件</a>
                   </div>
                 `
-                : ""
-              }
+                : ""}
             </div>
-            ${state.error ? `<div class="alert">${escapeHtml(state.error)}</div>` : ""}
+            ${state.error ? `<div class="stream-alert">${escapeHtml(state.error)}</div>` : ""}
             ${state.messages.length > 0
-              ? `<div class="message-list">${state.messages.map((message) => renderMessageItem(state, message)).join("")}</div>`
+              ? `
+                <div class="message-list">${state.messages.map((message) => renderMessageItem(state, message)).join("")}</div>
+                ${renderMessagePagination(state)}
+              `
               : `
-                <section class="empty-panel compact">
-                  <h3>这个文件夹里暂时没有可展示邮件</h3>
-                  <p>如果邮箱刚接入，可以先等待同步，或在 Slack 中执行 <code>/mail sync &lt;mailbox&gt;</code>。</p>
+                <section class="empty-note">
+                  <h3>这个文件夹里没有可展示邮件</h3>
+                  <p>如果邮箱刚接入，可以先等待同步，或者在 Slack 中执行 <code>/mail sync &lt;mailbox&gt;</code>。</p>
                 </section>
               `}
           </section>
 
-          <main class="pane reader">
-            ${renderMessageBody(state.selectedMessage, state)}
+          <main class="pane reader-pane">
+            <div class="reader-wrap">
+              ${renderMessageBody(state.selectedMessage, state)}
+            </div>
           </main>
         </div>
       </div>

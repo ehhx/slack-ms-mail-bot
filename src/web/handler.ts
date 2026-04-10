@@ -112,6 +112,8 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
       mailboxId: url.searchParams.get("mailbox"),
       folder: url.searchParams.get("folder"),
       messageId: url.searchParams.get("message"),
+      pageCursor: url.searchParams.get("pageCursor"),
+      page: url.searchParams.get("page"),
     });
     return renderAppPage(state);
   }
@@ -131,12 +133,13 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
       const page = await listMailboxMessagesForWeb({
         mailboxId,
         folderKind: url.searchParams.get("folder") ?? "inbox",
+        pageCursor: url.searchParams.get("pageCursor"),
       });
       return jsonResponse({
         mailbox: toWebMailboxSummary(page.bundle),
         folder: page.folder,
         messages: page.messages.map((message) => toWebMessageSummary(message)),
-        nextPageUrl: page.nextPageUrl,
+        nextPageCursor: page.nextPageCursor,
       });
     } catch (error) {
       return jsonResponse(

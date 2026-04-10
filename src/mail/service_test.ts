@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { clearConfigCache } from "../config.ts";
+import { clearConfigCache, getConfigAsync } from "../config.ts";
 import { setKvForTesting } from "../store/kv.ts";
 import {
   getMailboxBundle,
@@ -8,6 +8,8 @@ import {
   saveMailboxBundle,
 } from "../store/mailbox.ts";
 import {
+  decodeWebMailPageCursor,
+  encodeWebMailPageCursor,
   createConnectUrl,
   processGraphNotifications,
   queueMailboxSyncByMailboxRef,
@@ -175,4 +177,38 @@ Deno.test("processGraphNotifications ignores non-graph provider mailboxes", asyn
 
   setKvForTesting(null);
   (kv as { close?: () => void }).close?.();
+});
+
+Deno.test("web mail page cursor roundtrips for the same Graph folder path", async () => {
+  setEnv();
+  clearConfigCache();
+  const config = await getConfigAsync();
+  const cursor = encodeWebMailPageCursor(
+    "https://graph.microsoft.com/v1.0/me/mailFolders/inbox-1/messages?$top=25&$skiptoken=abc",
+  );
+
+  const decoded = decodeWebMailPageCursor(cursor, config, "inbox-1");
+
+  assertEquals(
+    decoded,
+    "https://graph.microsoft.com/v1.0/me/mailFolders/inbox-1/messages?$top=25&$skiptoken=abc",
+  );
+});
+
+Deno.test("web mail page cursor rejects non-Graph origins", async () => {
+  setEnv();
+  clearConfigCache();
+  const config = await getConfigAsync();
+  const cursor = encodeWebMailPageCursor(
+    "https://evil.example.com/v1.0/me/mailFolders/inbox-1/messages?$skiptoken=abc",
+  );
+
+  let message = "";
+  try {
+    decodeWebMailPageCursor(cursor, config, "inbox-1");
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+
+  assertEquals(message, "分页游标域名无效。");
 });
