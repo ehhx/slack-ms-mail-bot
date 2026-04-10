@@ -451,6 +451,7 @@ function renderAppShell(title: string, body: string): Response {
         min-height: calc(100vh - 68px);
         display: grid;
         grid-template-columns: 216px 344px minmax(0, 1fr);
+        grid-template-areas: "accounts stream reader";
       }
       .pane {
         min-height: calc(100vh - 68px);
@@ -462,14 +463,17 @@ function renderAppShell(title: string, body: string): Response {
       }
       .pane + .pane { border-left: 1px solid var(--line); }
       .accounts-pane {
+        grid-area: accounts;
         padding: 0 16px 28px;
         background: var(--shell);
       }
       .stream-pane {
+        grid-area: stream;
         padding: 0 0 30px;
         background: var(--shell-2);
       }
       .reader-pane {
+        grid-area: reader;
         background: linear-gradient(180deg, #eff4fa 0%, var(--reader-bg) 100%);
         color: var(--reader-text);
       }
@@ -523,6 +527,9 @@ function renderAppShell(title: string, body: string): Response {
         gap: 4px;
         content-visibility: auto;
         contain-intrinsic-size: 720px;
+      }
+      .account-list {
+        overflow-x: hidden;
       }
       .mailbox-item,
       .message-item {
@@ -920,15 +927,82 @@ function renderAppShell(title: string, body: string): Response {
         .reader-intro,
         .reader-document { padding: 38px 40px 46px; }
       }
+      @media (max-width: 1380px) {
+        .workspace {
+          grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+          grid-template-rows: auto 1fr;
+          grid-template-areas:
+            "accounts accounts"
+            "stream reader";
+        }
+        .accounts-pane {
+          min-height: auto;
+          padding: 16px 18px 14px;
+          border-bottom: 1px solid var(--line);
+        }
+        .accounts-head {
+          position: static;
+          padding: 0 0 12px;
+          background: none;
+        }
+        .accounts-head p {
+          display: none;
+        }
+        .account-list {
+          display: grid;
+          grid-auto-flow: column;
+          grid-auto-columns: minmax(232px, 260px);
+          gap: 12px;
+          overflow-x: auto;
+          overflow-y: hidden;
+          padding-bottom: 4px;
+          scrollbar-width: none;
+          scroll-snap-type: x proximity;
+        }
+        .account-list::-webkit-scrollbar {
+          display: none;
+        }
+        .accounts-pane .mailbox-item {
+          min-height: 100%;
+          padding: 14px 14px 14px 16px;
+          background: rgba(255, 255, 255, 0.02);
+          scroll-snap-align: start;
+        }
+        .accounts-pane .mailbox-item.is-active {
+          background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.05) 100%);
+        }
+        .stream-pane {
+          border-left: 0 !important;
+        }
+      }
       @media (max-width: 960px) {
         .app-shell { grid-template-rows: auto 1fr; }
         .topbar {
           padding: 14px 16px;
           align-items: flex-start;
         }
-        .workspace { grid-template-columns: 1fr; }
+        .workspace {
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "accounts"
+            "stream"
+            "reader";
+        }
         .pane { min-height: auto; }
         .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+        .accounts-pane {
+          padding: 14px 16px 12px;
+          border-bottom: 0;
+        }
+        .accounts-head {
+          padding: 0 0 10px;
+        }
+        .accounts-head h2 {
+          font-size: 18px;
+        }
+        .account-list {
+          grid-auto-columns: minmax(220px, 82vw);
+        }
         .reader-wrap { min-height: auto; }
         .reader-inline-meta,
         .reader-statline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
