@@ -165,7 +165,12 @@ export async function getMailboxBundle(
   mailboxId: string,
 ): Promise<MailboxBundle | null> {
   const [connection, route, syncState, lease] = await kv.getMany<
-    MailboxConnection | MailboxRoute | MailboxSyncState | MailboxSubscriptionLease
+    [
+      MailboxConnection,
+      MailboxRoute,
+      MailboxSyncState,
+      MailboxSubscriptionLease
+    ]
   >([
     connectionKey(mailboxId),
     routeKey(mailboxId),

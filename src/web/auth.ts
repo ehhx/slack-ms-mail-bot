@@ -7,6 +7,10 @@ function textBytes(input: string): Uint8Array {
   return new TextEncoder().encode(input);
 }
 
+function textBuffer(input: string): ArrayBuffer {
+  return textBytes(input).buffer.slice(0) as ArrayBuffer;
+}
+
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (const value of bytes) {
@@ -18,12 +22,12 @@ function base64UrlEncode(bytes: Uint8Array): string {
 async function signSessionPayload(payload: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
-    textBytes(secret),
+    textBuffer(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const signature = await crypto.subtle.sign("HMAC", key, textBytes(payload));
+  const signature = await crypto.subtle.sign("HMAC", key, textBuffer(payload));
   return base64UrlEncode(new Uint8Array(signature));
 }
 

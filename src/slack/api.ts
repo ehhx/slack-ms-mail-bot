@@ -59,6 +59,10 @@ function base64ToBytes(input: string): Uint8Array {
   return bytes;
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 export async function postChannelMessage(
   channel: string,
   text: string,
@@ -112,7 +116,7 @@ export async function uploadInlineImageToSlack(input: {
     headers: {
       "content-type": input.image.contentType,
     },
-    body: bytes,
+    body: new Blob([toArrayBuffer(bytes)], { type: input.image.contentType }),
   }, config.slackApiTimeoutMs);
   const uploadRaw = await uploadResponse.text().catch(() => "");
   if (!uploadResponse.ok) {

@@ -98,6 +98,7 @@ export function htmlToPlainText(input: string | undefined): string {
       .replace(/<[^>]+>/g, " "),
   )
     .replace(/\r/g, "")
+    .replace(/\n[ \t]+/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")

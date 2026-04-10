@@ -14,4 +14,4 @@ if (typeof maybeCron === "function") {
   });
 }
 
-Deno.serve((request, info) => handleRequest(request, info));
+Deno.serve((request) => handleRequest(request));
