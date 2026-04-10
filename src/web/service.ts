@@ -1,8 +1,7 @@
 import { monitoredFoldersText, notificationBodyText } from "../mail/message.ts";
 import {
-  getMailboxMessageForWeb,
   listAllMailboxBundlesForWeb,
-  listMailboxMessagesForWeb,
+  loadMailboxWebView,
 } from "../mail/service.ts";
 import type { MailFolderKind, MailMessageSummary, MailboxBundle } from "../mail/types.ts";
 
@@ -82,11 +81,12 @@ export async function buildWebConsoleState(input: {
     };
   }
 
-  let page: Awaited<ReturnType<typeof listMailboxMessagesForWeb>>;
+  let page: Awaited<ReturnType<typeof loadMailboxWebView>>;
   try {
-    page = await listMailboxMessagesForWeb({
+    page = await loadMailboxWebView({
       mailboxId: selectedMailbox.connection.mailboxId,
       folderKind: selectedFolder,
+      messageId: input.messageId,
       fetchImpl: input.fetchImpl,
     });
   } catch (listError) {
@@ -103,25 +103,7 @@ export async function buildWebConsoleState(input: {
   selectedMailbox = page.bundle;
   mailboxes = replaceMailbox(mailboxes, selectedMailbox);
 
-  const selectedMessageId = input.messageId ?? page.messages[0]?.messageId ?? null;
-  let selectedMessage: WebMessageDetail | null = null;
-
-  if (selectedMessageId) {
-    try {
-      const detail = await getMailboxMessageForWeb({
-        mailboxId: selectedMailbox.connection.mailboxId,
-        messageId: selectedMessageId,
-        folderKind: selectedFolder,
-        fetchImpl: input.fetchImpl,
-      });
-      selectedMailbox = detail.bundle;
-      mailboxes = replaceMailbox(mailboxes, selectedMailbox);
-      selectedMessage = buildMessageDetail(detail.message);
-    } catch (detailError) {
-      const message = detailError instanceof Error ? detailError.message : String(detailError);
-      error = error ?? `读取邮件详情失败：${message}`;
-    }
-  }
+  const selectedMessage = page.selectedMessage ? buildMessageDetail(page.selectedMessage) : null;
 
   return {
     mailboxes,

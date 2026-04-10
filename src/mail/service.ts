@@ -58,7 +58,7 @@ function nowIso(): string {
 const MAX_INLINE_IMAGE_UPLOADS = 3;
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 const WEB_MESSAGE_LIST_LIMIT = 25;
-const WEB_INLINE_IMAGE_LIMIT = 12;
+const WEB_INLINE_IMAGE_LIMIT = 4;
 
 function isExpired(iso: string | undefined, marginMs = 0): boolean {
   if (!iso) return true;
@@ -679,9 +679,10 @@ export async function listAllMailboxBundlesForWeb(): Promise<MailboxBundle[]> {
   return await listAllMailboxBundles(kv);
 }
 
-export async function listMailboxMessagesForWeb(input: {
+export async function loadMailboxWebView(input: {
   mailboxId: string;
   folderKind?: MailFolderKind | string;
+  messageId?: string | null;
   limit?: number;
   pageUrl?: string;
   fetchImpl?: typeof fetch;
@@ -689,6 +690,7 @@ export async function listMailboxMessagesForWeb(input: {
   bundle: MailboxBundle;
   folder: { kind: MailFolderKind; folderId: string; folderName: string };
   messages: MailMessageSummary[];
+  selectedMessage: MailMessageSummary | null;
   nextPageUrl?: string;
 }> {
   const { bundle, graph, folders } = await getGraphMailboxAccessForRead(
@@ -704,9 +706,42 @@ export async function listMailboxMessagesForWeb(input: {
     pageUrl: input.pageUrl,
   });
 
+  let selectedMessage: MailMessageSummary | null = null;
+  if (input.messageId) {
+    const baseMessage = page.messages.find((message) => message.messageId === input.messageId) ?? {
+      messageId: input.messageId,
+      subject: "(loading)",
+      folderKind: folder.kind,
+      folderName: folder.folderName,
+    };
+    selectedMessage = await enrichGraphMessage(graph, baseMessage, WEB_INLINE_IMAGE_LIMIT);
+  }
+
   return {
     bundle,
     folder,
+    messages: page.messages,
+    selectedMessage,
+    nextPageUrl: page.nextPageUrl,
+  };
+}
+
+export async function listMailboxMessagesForWeb(input: {
+  mailboxId: string;
+  folderKind?: MailFolderKind | string;
+  limit?: number;
+  pageUrl?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  bundle: MailboxBundle;
+  folder: { kind: MailFolderKind; folderId: string; folderName: string };
+  messages: MailMessageSummary[];
+  nextPageUrl?: string;
+}> {
+  const page = await loadMailboxWebView(input);
+  return {
+    bundle: page.bundle,
+    folder: page.folder,
     messages: page.messages,
     nextPageUrl: page.nextPageUrl,
   };
@@ -957,6 +992,18 @@ async function loadInlineImagesForGraphMessage(
   return inlineImages;
 }
 
+function shouldLoadInlineImagesForMessage(
+  message: MailMessageSummary,
+  inlineImageLimit: number,
+): boolean {
+  if (inlineImageLimit <= 0) return false;
+  if (!message.attachments?.some((attachment) => attachment.isInline && attachment.contentType?.startsWith("image/"))) {
+    return false;
+  }
+  if (message.bodyContentType !== "html") return false;
+  return message.bodyText?.toLowerCase().includes("cid:") ?? false;
+}
+
 async function enrichGraphMessage(
   graph: MicrosoftGraphClient,
   message: MailMessageSummary,
@@ -969,11 +1016,13 @@ async function enrichGraphMessage(
     folderKind: message.folderKind,
     folderName: message.folderName,
   };
-  const inlineImages = await loadInlineImagesForGraphMessage(
-    graph,
-    merged,
-    inlineImageLimit,
-  );
+  const inlineImages = shouldLoadInlineImagesForMessage(merged, inlineImageLimit)
+    ? await loadInlineImagesForGraphMessage(
+      graph,
+      merged,
+      inlineImageLimit,
+    )
+    : [];
   return {
     ...merged,
     inlineImages,
