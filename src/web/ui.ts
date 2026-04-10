@@ -233,7 +233,7 @@ function renderMailboxItem(
 ): string {
   const active = mailbox.connection.mailboxId === selectedMailboxId;
   return `
-    <a class="mailbox-item${active ? " is-active" : ""}" href="${appHref({
+    <a class="mailbox-item${active ? " is-active" : ""}" title="${escapeHtml(mailbox.connection.emailAddress)}" href="${appHref({
       mailboxId: mailbox.connection.mailboxId,
       folder: selectedFolder,
     })}">
@@ -244,6 +244,49 @@ function renderMailboxItem(
         <span>${escapeHtml(mailbox.route?.slackChannelName || mailbox.route?.slackChannelId || "未配置")}</span>
       </div>
     </a>
+  `;
+}
+
+function renderMailboxSwitcher(state: WebConsoleState): string {
+  if (state.mailboxes.length === 0 || !state.selectedMailbox) {
+    return `
+      <div class="mailbox-switcher-empty">
+        <span>未连接邮箱</span>
+      </div>
+    `;
+  }
+
+  return `
+    <details class="mailbox-switcher">
+      <summary class="mailbox-switcher-trigger">
+        <span class="mailbox-switcher-badge">邮箱</span>
+        <span class="mailbox-switcher-copy">
+          <strong>${escapeHtml(
+            state.selectedMailbox.connection.displayName || state.selectedMailbox.connection.emailAddress,
+          )}</strong>
+          <span>${state.mailboxes.length} 个账号 · ${escapeHtml(state.selectedMailbox.connection.emailAddress)}</span>
+        </span>
+        <span class="mailbox-switcher-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="mailbox-switcher-menu">
+        ${state.mailboxes.map((mailbox) => `
+          <a
+            class="mailbox-switcher-option${mailbox.connection.mailboxId === state.selectedMailbox?.connection.mailboxId ? " is-active" : ""}"
+            href="${appHref({
+              mailboxId: mailbox.connection.mailboxId,
+              folder: state.selectedFolder,
+            })}"
+          >
+            <div class="mailbox-switcher-option-title">${escapeHtml(mailbox.connection.displayName || mailbox.connection.emailAddress)}</div>
+            <div class="mailbox-switcher-option-subtitle">${escapeHtml(mailbox.connection.emailAddress)}</div>
+            <div class="mailbox-switcher-option-meta">
+              <span>${escapeHtml(providerLabel(mailbox))}</span>
+              <span>${escapeHtml(mailbox.route?.slackChannelName || mailbox.route?.slackChannelId || "未配置")}</span>
+            </div>
+          </a>
+        `).join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -319,7 +362,7 @@ function renderEmptyMailboxes(): string {
   return `
     <section class="empty-note">
       <h3>暂无邮箱</h3>
-      <p>先在 Slack 里执行 <code>/mail connect graph</code>，连接后这里会自动出现账号列表。</p>
+      <p>先在 Slack 里执行 <code>/mail connect graph</code>，连接至少一个 Outlook 账号后，这里才会显示消息流和阅读区。</p>
     </section>
   `;
 }
@@ -387,10 +430,17 @@ function renderAppShell(title: string, body: string): Response {
         border-bottom: 1px solid var(--line);
         background: rgba(7, 11, 18, 0.96);
       }
+      .topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        min-width: 0;
+      }
       .brand {
         display: flex;
         align-items: center;
         gap: 12px;
+        flex: 0 0 auto;
       }
       .brand-mark {
         width: 11px;
@@ -420,6 +470,7 @@ function renderAppShell(title: string, body: string): Response {
         align-items: center;
         gap: 16px;
         flex-wrap: wrap;
+        justify-content: flex-end;
       }
       .meta-block {
         display: grid;
@@ -447,11 +498,124 @@ function renderAppShell(title: string, body: string): Response {
         color: var(--text);
         cursor: pointer;
       }
+      .mailbox-switcher,
+      .mailbox-switcher-empty {
+        position: relative;
+        flex: 0 1 360px;
+        min-width: 0;
+      }
+      .mailbox-switcher-trigger,
+      .mailbox-switcher-empty {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        width: min(360px, 100%);
+        min-height: 48px;
+        padding: 8px 14px;
+        border: 1px solid var(--line-strong);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .mailbox-switcher-empty {
+        color: var(--muted);
+      }
+      .mailbox-switcher summary {
+        list-style: none;
+        cursor: pointer;
+      }
+      .mailbox-switcher summary::-webkit-details-marker {
+        display: none;
+      }
+      .mailbox-switcher-badge {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 40px;
+        height: 28px;
+        padding: 0 10px;
+        border-radius: 999px;
+        background: rgba(122, 174, 255, 0.12);
+        color: var(--accent);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .mailbox-switcher-copy {
+        min-width: 0;
+        display: grid;
+        gap: 2px;
+      }
+      .mailbox-switcher-copy strong {
+        font-size: 14px;
+        font-weight: 650;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .mailbox-switcher-copy span {
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .mailbox-switcher-caret {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .mailbox-switcher[open] .mailbox-switcher-caret {
+        transform: rotate(180deg);
+      }
+      .mailbox-switcher-menu {
+        position: absolute;
+        top: calc(100% + 10px);
+        left: 0;
+        z-index: 30;
+        width: min(380px, calc(100vw - 32px));
+        display: grid;
+        gap: 6px;
+        padding: 8px;
+        border: 1px solid var(--line-strong);
+        border-radius: 20px;
+        background: rgba(8, 13, 22, 0.98);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+      }
+      .mailbox-switcher-option {
+        display: grid;
+        gap: 4px;
+        padding: 12px 14px;
+        border-radius: 14px;
+      }
+      .mailbox-switcher-option:hover {
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .mailbox-switcher-option.is-active {
+        background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.03) 100%);
+      }
+      .mailbox-switcher-option-title {
+        font-size: 14px;
+        font-weight: 650;
+        color: var(--text);
+      }
+      .mailbox-switcher-option-subtitle,
+      .mailbox-switcher-option-meta {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .mailbox-switcher-option-meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
       .workspace {
         min-height: calc(100vh - 68px);
         display: grid;
-        grid-template-columns: 216px 344px minmax(0, 1fr);
-        grid-template-areas: "accounts stream reader";
+        grid-template-columns: minmax(320px, 376px) minmax(0, 1fr);
+        grid-template-areas: "stream reader";
       }
       .pane {
         min-height: calc(100vh - 68px);
@@ -462,11 +626,6 @@ function renderAppShell(title: string, body: string): Response {
         scrollbar-width: thin;
       }
       .pane + .pane { border-left: 1px solid var(--line); }
-      .accounts-pane {
-        grid-area: accounts;
-        padding: 0 16px 28px;
-        background: var(--shell);
-      }
       .stream-pane {
         grid-area: stream;
         padding: 0 0 30px;
@@ -484,7 +643,6 @@ function renderAppShell(title: string, body: string): Response {
         text-transform: uppercase;
         color: var(--muted);
       }
-      .accounts-head,
       .stream-head {
         display: grid;
         gap: 10px;
@@ -493,13 +651,9 @@ function renderAppShell(title: string, body: string): Response {
         z-index: 4;
         padding: 22px 18px 16px;
       }
-      .accounts-head {
-        background: linear-gradient(180deg, rgba(8, 12, 19, 0.98) 0%, rgba(8, 12, 19, 0.92) 72%, rgba(8, 12, 19, 0) 100%);
-      }
       .stream-head {
         background: linear-gradient(180deg, rgba(13, 21, 33, 0.99) 0%, rgba(13, 21, 33, 0.92) 72%, rgba(13, 21, 33, 0) 100%);
       }
-      .accounts-head h2,
       .stream-head h2,
       .empty-note h3,
       .login-panel h1,
@@ -507,12 +661,10 @@ function renderAppShell(title: string, body: string): Response {
       .reader-title-row h1 {
         margin: 0;
       }
-      .accounts-head h2,
       .stream-head h2 {
         font-size: 21px;
         letter-spacing: -0.03em;
       }
-      .accounts-head p,
       .stream-head p,
       .empty-note p,
       .login-panel p,
@@ -521,17 +673,12 @@ function renderAppShell(title: string, body: string): Response {
         color: var(--muted);
         line-height: 1.6;
       }
-      .account-list,
       .message-list {
         display: grid;
         gap: 4px;
         content-visibility: auto;
         contain-intrinsic-size: 720px;
       }
-      .account-list {
-        overflow-x: hidden;
-      }
-      .mailbox-item,
       .message-item {
         position: relative;
         display: grid;
@@ -540,15 +687,10 @@ function renderAppShell(title: string, body: string): Response {
         content-visibility: auto;
         contain-intrinsic-size: 96px;
       }
-      .mailbox-item {
-        padding: 16px 14px;
-        border-radius: 18px;
-      }
       .message-item {
         padding: 18px 20px 16px 24px;
         border-bottom: 1px solid var(--line);
       }
-      .mailbox-item::before,
       .message-item::before {
         content: "";
         position: absolute;
@@ -559,25 +701,19 @@ function renderAppShell(title: string, body: string): Response {
         border-radius: 999px;
         background: transparent;
       }
-      .mailbox-item:hover,
       .message-item:hover {
         background: rgba(255, 255, 255, 0.03);
         transform: translateX(1px);
       }
-      .mailbox-item.is-active,
       .message-item.is-active {
         background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.03) 100%);
       }
-      .mailbox-item.is-active::before,
       .message-item.is-active::before { background: var(--accent); }
-      .mailbox-title,
       .message-subject {
         font-size: 15px;
         font-weight: 650;
         line-height: 1.35;
       }
-      .mailbox-subtitle,
-      .mailbox-meta,
       .message-sender,
       .message-preview,
       .message-time,
@@ -585,10 +721,8 @@ function renderAppShell(title: string, body: string): Response {
         font-size: 13px;
         color: var(--muted);
       }
-      .mailbox-subtitle,
       .message-sender,
       .message-preview { line-height: 1.5; }
-      .mailbox-meta,
       .message-row-top {
         display: flex;
         align-items: flex-start;
@@ -921,59 +1055,11 @@ function renderAppShell(title: string, body: string): Response {
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { transition: none !important; animation: none !important; }
       }
-      @media (max-width: 1280px) {
-        .workspace { grid-template-columns: 204px 304px minmax(0, 1fr); }
+      @media (max-width: 1440px) {
+        .workspace { grid-template-columns: minmax(300px, 344px) minmax(0, 1fr); }
         .reader-wrap { padding: 28px 28px 42px; }
         .reader-intro,
         .reader-document { padding: 38px 40px 46px; }
-      }
-      @media (max-width: 1380px) {
-        .workspace {
-          grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
-          grid-template-rows: auto 1fr;
-          grid-template-areas:
-            "accounts accounts"
-            "stream reader";
-        }
-        .accounts-pane {
-          min-height: auto;
-          padding: 16px 18px 14px;
-          border-bottom: 1px solid var(--line);
-        }
-        .accounts-head {
-          position: static;
-          padding: 0 0 12px;
-          background: none;
-        }
-        .accounts-head p {
-          display: none;
-        }
-        .account-list {
-          display: grid;
-          grid-auto-flow: column;
-          grid-auto-columns: minmax(232px, 260px);
-          gap: 12px;
-          overflow-x: auto;
-          overflow-y: hidden;
-          padding-bottom: 4px;
-          scrollbar-width: none;
-          scroll-snap-type: x proximity;
-        }
-        .account-list::-webkit-scrollbar {
-          display: none;
-        }
-        .accounts-pane .mailbox-item {
-          min-height: 100%;
-          padding: 14px 14px 14px 16px;
-          background: rgba(255, 255, 255, 0.02);
-          scroll-snap-align: start;
-        }
-        .accounts-pane .mailbox-item.is-active {
-          background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.05) 100%);
-        }
-        .stream-pane {
-          border-left: 0 !important;
-        }
       }
       @media (max-width: 960px) {
         .app-shell { grid-template-rows: auto 1fr; }
@@ -981,28 +1067,31 @@ function renderAppShell(title: string, body: string): Response {
           padding: 14px 16px;
           align-items: flex-start;
         }
+        .topbar-left {
+          width: 100%;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 12px;
+        }
+        .mailbox-switcher,
+        .mailbox-switcher-empty {
+          flex-basis: auto;
+        }
+        .mailbox-switcher-trigger,
+        .mailbox-switcher-empty {
+          width: 100%;
+        }
+        .mailbox-switcher-menu {
+          width: 100%;
+        }
         .workspace {
           grid-template-columns: 1fr;
           grid-template-areas:
-            "accounts"
             "stream"
             "reader";
         }
         .pane { min-height: auto; }
         .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
-        .accounts-pane {
-          padding: 14px 16px 12px;
-          border-bottom: 0;
-        }
-        .accounts-head {
-          padding: 0 0 10px;
-        }
-        .accounts-head h2 {
-          font-size: 18px;
-        }
-        .account-list {
-          grid-auto-columns: minmax(220px, 82vw);
-        }
         .reader-wrap { min-height: auto; }
         .reader-inline-meta,
         .reader-statline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1019,6 +1108,18 @@ function renderAppShell(title: string, body: string): Response {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           width: 100%;
+        }
+        .mailbox-switcher-trigger {
+          align-items: flex-start;
+        }
+        .mailbox-switcher-badge {
+          min-width: 34px;
+          height: 26px;
+          padding: 0 8px;
+        }
+        .mailbox-switcher-copy strong,
+        .mailbox-switcher-copy span {
+          white-space: normal;
         }
         .ghost-button { width: fit-content; }
         .reader-wrap { padding: 18px 16px 28px; }
@@ -1090,12 +1191,15 @@ export function renderAppPage(state: WebConsoleState): Response {
     `
       <div class="app-shell">
         <header class="topbar">
-          <div class="brand">
-            <div class="brand-mark"></div>
-            <div class="brand-copy">
-              <div class="brand-kicker">邮件工作台</div>
-              <div class="brand-title">多账号 Outlook 阅读台</div>
+          <div class="topbar-left">
+            <div class="brand">
+              <div class="brand-mark"></div>
+              <div class="brand-copy">
+                <div class="brand-kicker">邮件工作台</div>
+                <div class="brand-title">多账号 Outlook 阅读台</div>
+              </div>
             </div>
+            ${renderMailboxSwitcher(state)}
           </div>
           <div class="topbar-meta">
             <div class="meta-block">
@@ -1117,23 +1221,12 @@ export function renderAppPage(state: WebConsoleState): Response {
         </header>
 
         <div class="workspace">
-          <aside class="pane accounts-pane">
-            <div class="accounts-head">
-              <div class="section-label">账号</div>
-              <h2>邮箱列表</h2>
-              <p>已连接邮箱与默认 Slack 路由。</p>
-            </div>
-            ${state.mailboxes.length > 0
-              ? `<nav class="account-list">${state.mailboxes.map((mailbox) => renderMailboxItem(mailbox, selectedMailboxId, selectedFolder)).join("")}</nav>`
-              : renderEmptyMailboxes()}
-          </aside>
-
           <section class="pane stream-pane">
             <div class="stream-head">
               <div class="section-label">消息流</div>
               <div class="stream-headline">
-                <h2>${escapeHtml(mailboxLabel)}</h2>
-                <div class="stream-meta">${state.selectedMailbox ? escapeHtml(state.selectedMailbox.connection.emailAddress) : "连接邮箱后可在这里查看消息流。"}</div>
+                <h2>${escapeHtml(formatFolderLabel(selectedFolder))}</h2>
+                <div class="stream-meta">${state.selectedMailbox ? `${escapeHtml(mailboxLabel)} · ${escapeHtml(state.selectedMailbox.connection.emailAddress)}` : "连接邮箱后可在这里查看消息流。"}</div>
               </div>
               ${state.selectedMailbox
                 ? `
@@ -1145,7 +1238,9 @@ export function renderAppPage(state: WebConsoleState): Response {
                 : ""}
             </div>
             ${state.error ? `<div class="stream-alert">${escapeHtml(state.error)}</div>` : ""}
-            ${state.messages.length > 0
+            ${!state.selectedMailbox
+              ? renderEmptyMailboxes()
+              : state.messages.length > 0
               ? `
                 <div class="message-list">${state.messages.map((message) => renderMessageItem(state, message)).join("")}</div>
                 ${renderMessagePagination(state)}
