@@ -1,5 +1,5 @@
 import { formatFolderLabel, monitoredFoldersText } from "../mail/message.ts";
-import type { MailInlineImage, MailboxBundle } from "../mail/types.ts";
+import type { MailboxBundle, MailInlineImage } from "../mail/types.ts";
 import type { WebConsoleState, WebMessageDetail } from "./service.ts";
 
 function escapeHtml(input: string): string {
@@ -16,6 +16,39 @@ function fmtTime(iso: string | undefined): string {
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return iso;
   return parsed.toLocaleString("zh-CN", { hour12: false });
+}
+
+function compactText(input: string | undefined): string {
+  return (input ?? "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * 这里只提取“像验证码”的短码：
+ * 1. 优先匹配验证码/OTP 等语义关键词附近的代码；
+ * 2. 再回退到关键词上下文中的纯数字短码；
+ * 3. 不在无关键词场景下盲目抓数字，避免把日期或时间识别成验证码。
+ */
+function detectVerificationCode(input: string | undefined): string | null {
+  const text = compactText(input);
+  if (!text) return null;
+
+  const directPatterns = [
+    /(?:验证码|校验码|动态码|动态密码|一次性密码|登录码|安全码|提取码|确认码)\D{0,12}([A-Z0-9-]{4,10})/iu,
+    /(?:verification code|security code|one[-\s]?time (?:password|code)|login code|auth(?:entication)? code|otp)\D{0,20}([A-Z0-9-]{4,10})/iu,
+    /(?:code is|password is|otp is|use code)\D{0,12}([A-Z0-9-]{4,10})/iu,
+  ];
+  for (const pattern of directPatterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].toUpperCase();
+  }
+
+  const hasKeyword =
+    /(验证码|校验码|动态码|动态密码|一次性密码|登录码|安全码|提取码|确认码|verification code|security code|one[-\s]?time (?:password|code)|login code|auth(?:entication)? code|otp)/iu
+      .test(text);
+  if (!hasKeyword) return null;
+
+  const fallback = text.match(/\b(\d{4,8})\b/);
+  return fallback?.[1] ?? null;
 }
 
 function appHref(input: {
@@ -36,7 +69,9 @@ function appHref(input: {
 }
 
 function providerLabel(bundle: MailboxBundle): string {
-  return bundle.connection.providerType === "ms_oauth2api" ? "msOauth2api" : "Graph 原生";
+  return bundle.connection.providerType === "ms_oauth2api"
+    ? "msOauth2api"
+    : "Graph 原生";
 }
 
 function normalizeContentId(input: string | undefined): string {
@@ -51,7 +86,10 @@ function dataUrlForInlineImage(image: MailInlineImage): string {
   return `data:${image.contentType};base64,${image.dataBase64}`;
 }
 
-function rewriteCidImages(html: string, inlineImages: MailInlineImage[] | undefined): string {
+function rewriteCidImages(
+  html: string,
+  inlineImages: MailInlineImage[] | undefined,
+): string {
   const contentIdMap = new Map<string, string>();
   for (const image of inlineImages ?? []) {
     const dataUrl = dataUrlForInlineImage(image);
@@ -71,7 +109,10 @@ function rewriteCidImages(html: string, inlineImages: MailInlineImage[] | undefi
   );
 }
 
-function sanitizeEmailHtml(html: string, inlineImages: MailInlineImage[] | undefined): string {
+function sanitizeEmailHtml(
+  html: string,
+  inlineImages: MailInlineImage[] | undefined,
+): string {
   return rewriteCidImages(html, inlineImages)
     .replace(/<!doctype[^>]*>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -88,7 +129,10 @@ function sanitizeEmailHtml(html: string, inlineImages: MailInlineImage[] | undef
     .replace(/<a\b/gi, '<a target="_blank" rel="noopener noreferrer"');
 }
 
-function buildReaderSrcdoc(html: string, inlineImages: MailInlineImage[] | undefined): string {
+function buildReaderSrcdoc(
+  html: string,
+  inlineImages: MailInlineImage[] | undefined,
+): string {
   const sanitized = sanitizeEmailHtml(html, inlineImages);
   return `<!doctype html>
 <html lang="zh-CN">
@@ -149,21 +193,41 @@ function renderReaderIntro(state: WebConsoleState): string {
       <h1>选择一封邮件开始阅读</h1>
       <p>消息流会先快速加载，正文、附件和内联图片只在你真正点开邮件时再读取，避免整个界面一起变慢。</p>
       <div class="reader-inline-meta">
-        <div><span>邮箱</span><strong>${escapeHtml(state.selectedMailbox.connection.displayName || state.selectedMailbox.connection.emailAddress)}</strong></div>
-        <div><span>文件夹</span><strong>${escapeHtml(formatFolderLabel(state.selectedFolder))}</strong></div>
-        <div><span>Slack 路由</span><strong>${escapeHtml(state.selectedMailbox.route?.slackChannelName || state.selectedMailbox.route?.slackChannelId || "未配置")}</strong></div>
-        <div><span>监控范围</span><strong>${escapeHtml(monitoredFoldersText(state.selectedMailbox))}</strong></div>
+        <div><span>邮箱</span><strong>${
+    escapeHtml(
+      state.selectedMailbox.connection.displayName ||
+        state.selectedMailbox.connection.emailAddress,
+    )
+  }</strong></div>
+        <div><span>文件夹</span><strong>${
+    escapeHtml(formatFolderLabel(state.selectedFolder))
+  }</strong></div>
+        <div><span>Slack 路由</span><strong>${
+    escapeHtml(
+      state.selectedMailbox.route?.slackChannelName ||
+        state.selectedMailbox.route?.slackChannelId || "未配置",
+    )
+  }</strong></div>
+        <div><span>监控范围</span><strong>${
+    escapeHtml(monitoredFoldersText(state.selectedMailbox))
+  }</strong></div>
       </div>
     </section>
   `;
 }
 
-function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleState): string {
+function renderMessageBody(
+  detail: WebMessageDetail | null,
+  state: WebConsoleState,
+): string {
   if (!detail) {
     return renderReaderIntro(state);
   }
 
   const attachments = detail.message.attachments ?? [];
+  const verificationCode = detectVerificationCode(
+    `${detail.message.subject ?? ""}\n${detail.bodyPlainText ?? ""}`,
+  );
   const htmlBody = detail.bodyHtml?.trim();
   const bodyBlock = htmlBody
     ? `
@@ -172,56 +236,110 @@ function renderMessageBody(detail: WebMessageDetail | null, state: WebConsoleSta
         title="邮件正文"
         loading="lazy"
         sandbox="allow-popups allow-popups-to-escape-sandbox"
-        srcdoc="${escapeHtml(buildReaderSrcdoc(htmlBody, detail.message.inlineImages))}"
+        srcdoc="${
+      escapeHtml(buildReaderSrcdoc(htmlBody, detail.message.inlineImages))
+    }"
       ></iframe>
     `
-    : `<pre class="mail-body-text">${escapeHtml(detail.bodyPlainText || "(无可用正文)")}</pre>`;
+    : `<pre class="mail-body-text">${
+      escapeHtml(detail.bodyPlainText || "(无可用正文)")
+    }</pre>`;
 
   return `
     <article class="reader-document">
       <header class="reader-header">
-        <div class="reader-kicker">${escapeHtml(formatFolderLabel(detail.message.folderKind, detail.message.folderName))}</div>
+        <div class="reader-kicker">${
+    escapeHtml(
+      formatFolderLabel(detail.message.folderKind, detail.message.folderName),
+    )
+  }</div>
         <div class="reader-title-row">
           <h1>${escapeHtml(detail.message.subject || "(无主题)")}</h1>
-          ${detail.message.webLink
-            ? `<a class="reader-action" href="${escapeHtml(detail.message.webLink)}" target="_blank" rel="noopener noreferrer">在 Outlook 中打开</a>`
-            : ""}
+          ${
+    detail.message.webLink
+      ? `<a class="reader-action" href="${
+        escapeHtml(detail.message.webLink)
+      }" target="_blank" rel="noopener noreferrer">在 Outlook 中打开</a>`
+      : ""
+  }
         </div>
         <div class="reader-byline">
-          <span>${escapeHtml(detail.message.fromName || detail.message.fromAddress || "未知发件人")}</span>
-          <span>${escapeHtml(detail.message.fromAddress || "")}</span>
+          <strong>${
+    escapeHtml(
+      detail.message.fromName || detail.message.fromAddress || "未知发件人",
+    )
+  }</strong>
+          ${
+    detail.message.fromAddress
+      ? `<span>${escapeHtml(detail.message.fromAddress)}</span>`
+      : ""
+  }
+          <span>接收于 ${
+    escapeHtml(fmtTime(detail.message.receivedDateTime))
+  }</span>
         </div>
       </header>
 
-      <section class="reader-statline">
-        <div><span>接收时间</span><strong>${escapeHtml(fmtTime(detail.message.receivedDateTime))}</strong></div>
-        <div><span>附件数量</span><strong>${attachments.length}</strong></div>
-        <div><span>内联图片</span><strong>${detail.message.inlineImages?.length ?? 0}</strong></div>
-        <div><span>正文类型</span><strong>${escapeHtml(detail.message.bodyContentType || "text")}</strong></div>
-      </section>
-
-      ${attachments.length > 0
-        ? `
-          <section class="reader-section">
-            <div class="reader-section-title">附件</div>
-            <ul class="attachment-list">
-              ${attachments.map((attachment) =>
-                `<li>
-                  <strong>${escapeHtml(attachment.name)}</strong>
-                  <span>${attachment.contentType ? escapeHtml(attachment.contentType) : "未知类型"}</span>
-                  <span>${attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : "-"}</span>
-                </li>`
-              ).join("")}
-            </ul>
+      ${
+    verificationCode
+      ? `
+          <section class="reader-code-banner">
+            <div class="reader-code-label">验证码</div>
+            <div class="reader-code-value">${escapeHtml(verificationCode)}</div>
+            <div class="reader-code-hint">已从主题或正文中提取，下面仍保留完整正文方便继续核对上下文。</div>
           </section>
         `
-        : ""
-      }
+      : ""
+  }
+
+      <section class="reader-meta-bar">
+        <div class="reader-meta-chip"><span>附件</span><strong>${attachments.length}</strong></div>
+        <div class="reader-meta-chip"><span>内联图</span><strong>${
+    detail.message.inlineImages?.length ?? 0
+  }</strong></div>
+        <div class="reader-meta-chip"><span>正文</span><strong>${
+    escapeHtml(detail.message.bodyContentType || "text")
+  }</strong></div>
+        <div class="reader-meta-chip"><span>文件夹</span><strong>${
+    escapeHtml(
+      formatFolderLabel(detail.message.folderKind, detail.message.folderName),
+    )
+  }</strong></div>
+      </section>
 
       <section class="reader-section reader-section-body">
         <div class="reader-section-title">正文</div>
         ${bodyBlock}
       </section>
+
+      ${
+    attachments.length > 0
+      ? `
+          <section class="reader-section">
+            <div class="reader-section-title">附件</div>
+            <ul class="attachment-list">
+              ${
+        attachments.map((attachment) =>
+          `<li>
+                  <strong>${escapeHtml(attachment.name)}</strong>
+                  <span>${
+            attachment.contentType
+              ? escapeHtml(attachment.contentType)
+              : "未知类型"
+          }</span>
+                  <span>${
+            attachment.size
+              ? `${Math.max(1, Math.round(attachment.size / 1024))} KB`
+              : "-"
+          }</span>
+                </li>`
+        ).join("")
+      }
+            </ul>
+          </section>
+        `
+      : ""
+  }
     </article>
   `;
 }
@@ -233,15 +351,30 @@ function renderMailboxItem(
 ): string {
   const active = mailbox.connection.mailboxId === selectedMailboxId;
   return `
-    <a class="mailbox-item${active ? " is-active" : ""}" title="${escapeHtml(mailbox.connection.emailAddress)}" href="${appHref({
+    <a class="mailbox-item${active ? " is-active" : ""}" title="${
+    escapeHtml(mailbox.connection.emailAddress)
+  }" href="${
+    appHref({
       mailboxId: mailbox.connection.mailboxId,
       folder: selectedFolder,
-    })}">
-      <div class="mailbox-title">${escapeHtml(mailbox.connection.displayName || mailbox.connection.emailAddress)}</div>
-      <div class="mailbox-subtitle">${escapeHtml(mailbox.connection.emailAddress)}</div>
+    })
+  }">
+      <div class="mailbox-title">${
+    escapeHtml(
+      mailbox.connection.displayName || mailbox.connection.emailAddress,
+    )
+  }</div>
+      <div class="mailbox-subtitle">${
+    escapeHtml(mailbox.connection.emailAddress)
+  }</div>
       <div class="mailbox-meta">
         <span>${escapeHtml(providerLabel(mailbox))}</span>
-        <span>${escapeHtml(mailbox.route?.slackChannelName || mailbox.route?.slackChannelId || "未配置")}</span>
+        <span>${
+    escapeHtml(
+      mailbox.route?.slackChannelName || mailbox.route?.slackChannelId ||
+        "未配置",
+    )
+  }</span>
       </div>
     </a>
   `;
@@ -261,30 +394,55 @@ function renderMailboxSwitcher(state: WebConsoleState): string {
       <summary class="mailbox-switcher-trigger">
         <span class="mailbox-switcher-badge">邮箱</span>
         <span class="mailbox-switcher-copy">
-          <strong>${escapeHtml(
-            state.selectedMailbox.connection.displayName || state.selectedMailbox.connection.emailAddress,
-          )}</strong>
-          <span>${state.mailboxes.length} 个账号 · ${escapeHtml(state.selectedMailbox.connection.emailAddress)}</span>
+          <strong>${
+    escapeHtml(
+      state.selectedMailbox.connection.displayName ||
+        state.selectedMailbox.connection.emailAddress,
+    )
+  }</strong>
+          <span>${state.mailboxes.length} 个账号 · ${
+    escapeHtml(state.selectedMailbox.connection.emailAddress)
+  }</span>
         </span>
         <span class="mailbox-switcher-caret" aria-hidden="true">▾</span>
       </summary>
       <div class="mailbox-switcher-menu">
-        ${state.mailboxes.map((mailbox) => `
+        ${
+    state.mailboxes.map((mailbox) => `
           <a
-            class="mailbox-switcher-option${mailbox.connection.mailboxId === state.selectedMailbox?.connection.mailboxId ? " is-active" : ""}"
-            href="${appHref({
-              mailboxId: mailbox.connection.mailboxId,
-              folder: state.selectedFolder,
-            })}"
+            class="mailbox-switcher-option${
+      mailbox.connection.mailboxId ===
+          state.selectedMailbox?.connection.mailboxId
+        ? " is-active"
+        : ""
+    }"
+            href="${
+      appHref({
+        mailboxId: mailbox.connection.mailboxId,
+        folder: state.selectedFolder,
+      })
+    }"
           >
-            <div class="mailbox-switcher-option-title">${escapeHtml(mailbox.connection.displayName || mailbox.connection.emailAddress)}</div>
-            <div class="mailbox-switcher-option-subtitle">${escapeHtml(mailbox.connection.emailAddress)}</div>
+            <div class="mailbox-switcher-option-title">${
+      escapeHtml(
+        mailbox.connection.displayName || mailbox.connection.emailAddress,
+      )
+    }</div>
+            <div class="mailbox-switcher-option-subtitle">${
+      escapeHtml(mailbox.connection.emailAddress)
+    }</div>
             <div class="mailbox-switcher-option-meta">
               <span>${escapeHtml(providerLabel(mailbox))}</span>
-              <span>${escapeHtml(mailbox.route?.slackChannelName || mailbox.route?.slackChannelId || "未配置")}</span>
+              <span>${
+      escapeHtml(
+        mailbox.route?.slackChannelName || mailbox.route?.slackChannelId ||
+          "未配置",
+      )
+    }</span>
             </div>
           </a>
-        `).join("")}
+        `).join("")
+  }
       </div>
     </details>
   `;
@@ -304,21 +462,44 @@ function renderMessageItem(
 ): string {
   const selectedMessageId = state.selectedMessage?.message.messageId;
   const active = message.messageId === selectedMessageId;
+  const verificationCode = detectVerificationCode(
+    `${message.subject ?? ""}\n${message.bodyPreview ?? ""}`,
+  );
   return `
-    <a class="message-item${active ? " is-active" : ""}" href="${appHref({
+    <a class="message-item${active ? " is-active" : ""}" href="${
+    appHref({
       mailboxId: state.selectedMailbox?.connection.mailboxId,
       folder: state.selectedFolder,
       messageId: message.messageId,
       pageCursor: state.currentPageCursor,
       page: state.pageIndex > 1 ? state.pageIndex : undefined,
-    })}">
+    })
+  }">
       <div class="message-row-top">
-        <span class="message-subject">${escapeHtml(message.subject || "(无主题)")}</span>
-        <span class="message-time">${escapeHtml(fmtTime(message.receivedDateTime))}</span>
+        <span class="message-subject">${
+    escapeHtml(message.subject || "(无主题)")
+  }</span>
+        <span class="message-time">${
+    escapeHtml(fmtTime(message.receivedDateTime))
+  }</span>
       </div>
-      <div class="message-sender">${escapeHtml(message.fromName || message.fromAddress || "未知发件人")}</div>
-      <div class="message-preview">${escapeHtml(message.bodyPreview || "(无预览)")}</div>
-      ${message.hasAttachments ? `<div class="message-meta">含附件</div>` : ""}
+      <div class="message-row-bottom">
+        <div class="message-sender">${
+    escapeHtml(message.fromName || message.fromAddress || "未知发件人")
+  }</div>
+        <div class="message-tags">
+          ${
+    verificationCode
+      ? `<span class="message-chip is-code">${
+        escapeHtml(verificationCode)
+      }</span>`
+      : ""
+  }
+          ${
+    message.hasAttachments ? `<span class="message-chip">附件</span>` : ""
+  }
+        </div>
+      </div>
     </a>
   `;
 }
@@ -346,13 +527,21 @@ function renderMessagePagination(state: WebConsoleState): string {
     <div class="stream-pagination">
       <div class="stream-pagination-copy">
         <span class="section-label">分页</span>
-        <strong>${state.pageIndex === 1 ? "最新邮件" : `第 ${state.pageIndex} 页`}</strong>
+        <strong>${
+    state.pageIndex === 1 ? "最新邮件" : `第 ${state.pageIndex} 页`
+  }</strong>
       </div>
       <div class="stream-pagination-actions">
-        ${state.hasPreviousPage ? `<a class="stream-page-link" href="${latestHref}">回到最新</a>` : ""}
-        ${olderHref
-          ? `<a class="stream-page-link is-primary" href="${olderHref}">更早邮件</a>`
-          : `<span class="stream-page-link is-disabled">没有更早邮件了</span>`}
+        ${
+    state.hasPreviousPage
+      ? `<a class="stream-page-link" href="${latestHref}">回到最新</a>`
+      : ""
+  }
+        ${
+    olderHref
+      ? `<a class="stream-page-link is-primary" href="${olderHref}">更早邮件</a>`
+      : `<span class="stream-page-link is-disabled">没有更早邮件了</span>`
+  }
       </div>
     </div>
   `;
@@ -400,12 +589,13 @@ function renderAppShell(title: string, body: string): Response {
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
-        min-height: 100%;
+        height: 100%;
         background:
           radial-gradient(circle at top left, rgba(74, 116, 196, 0.14), transparent 24%),
           linear-gradient(180deg, #07101a 0%, var(--bg) 100%);
         color: var(--text);
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        overflow: hidden;
       }
       body {
         -webkit-font-smoothing: antialiased;
@@ -417,9 +607,11 @@ function renderAppShell(title: string, body: string): Response {
         font-size: 0.92em;
       }
       .app-shell {
+        height: 100vh;
         min-height: 100vh;
         display: grid;
         grid-template-rows: 68px 1fr;
+        overflow: hidden;
       }
       .topbar {
         display: flex;
@@ -612,23 +804,41 @@ function renderAppShell(title: string, body: string): Response {
         gap: 12px;
       }
       .workspace {
-        min-height: calc(100vh - 68px);
+        height: calc(100vh - 68px);
+        min-height: 0;
         display: grid;
-        grid-template-columns: minmax(320px, 376px) minmax(0, 1fr);
+        grid-template-columns: minmax(272px, 320px) minmax(0, 1fr);
         grid-template-areas: "stream reader";
+        overflow: hidden;
       }
       .pane {
-        min-height: calc(100vh - 68px);
-        overflow: auto;
-        scrollbar-gutter: stable;
+        min-height: 0;
+        height: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-gutter: stable both-edges;
         contain: content;
         overscroll-behavior: contain;
         scrollbar-width: thin;
+        scrollbar-color: rgba(122, 174, 255, 0.42) transparent;
+      }
+      .pane::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+      }
+      .pane::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .pane::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgba(122, 174, 255, 0.28);
+        border: 2px solid transparent;
+        background-clip: padding-box;
       }
       .pane + .pane { border-left: 1px solid var(--line); }
       .stream-pane {
         grid-area: stream;
-        padding: 0 0 30px;
+        padding: 0 0 18px;
         background: var(--shell-2);
       }
       .reader-pane {
@@ -645,11 +855,11 @@ function renderAppShell(title: string, body: string): Response {
       }
       .stream-head {
         display: grid;
-        gap: 10px;
+        gap: 8px;
         position: sticky;
         top: 0;
         z-index: 4;
-        padding: 22px 18px 16px;
+        padding: 18px 16px 12px;
       }
       .stream-head {
         background: linear-gradient(180deg, rgba(13, 21, 33, 0.99) 0%, rgba(13, 21, 33, 0.92) 72%, rgba(13, 21, 33, 0) 100%);
@@ -675,20 +885,20 @@ function renderAppShell(title: string, body: string): Response {
       }
       .message-list {
         display: grid;
-        gap: 4px;
+        gap: 0;
         content-visibility: auto;
         contain-intrinsic-size: 720px;
       }
       .message-item {
         position: relative;
         display: grid;
-        gap: 7px;
+        gap: 9px;
         transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
         content-visibility: auto;
-        contain-intrinsic-size: 96px;
+        contain-intrinsic-size: 78px;
       }
       .message-item {
-        padding: 18px 20px 16px 24px;
+        padding: 14px 16px 14px 18px;
         border-bottom: 1px solid var(--line);
       }
       .message-item::before {
@@ -710,40 +920,60 @@ function renderAppShell(title: string, body: string): Response {
       }
       .message-item.is-active::before { background: var(--accent); }
       .message-subject {
-        font-size: 15px;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        font-size: 16px;
         font-weight: 650;
         line-height: 1.35;
       }
       .message-sender,
-      .message-preview,
-      .message-time,
-      .message-meta {
+      .message-time {
         font-size: 13px;
         color: var(--muted);
       }
-      .message-sender,
-      .message-preview { line-height: 1.5; }
+      .message-sender { line-height: 1.5; }
       .message-row-top {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
       }
-      .message-time { white-space: nowrap; }
-      .message-preview {
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        overflow: hidden;
+      .message-row-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
       }
-      .message-meta {
+      .message-time {
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .message-tags {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .message-chip {
         width: fit-content;
         padding: 4px 8px;
         border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
         background: rgba(255, 255, 255, 0.04);
         font-size: 11px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
+        color: var(--muted);
+      }
+      .message-chip.is-code {
+        border-color: rgba(122, 174, 255, 0.32);
+        background: rgba(122, 174, 255, 0.1);
+        color: var(--accent);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+        font-weight: 700;
       }
       .folder-tabs {
         display: flex;
@@ -778,7 +1008,7 @@ function renderAppShell(title: string, body: string): Response {
         color: var(--muted);
       }
       .stream-alert {
-        margin: 0 18px 14px;
+        margin: 0 16px 12px;
         padding: 12px 14px;
         border-radius: 14px;
         border: 1px solid rgba(220, 38, 38, 0.24);
@@ -791,8 +1021,8 @@ function renderAppShell(title: string, body: string): Response {
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        margin: 16px 18px 0;
-        padding-top: 18px;
+        margin: 12px 16px 0;
+        padding-top: 16px;
         border-top: 1px solid var(--line);
       }
       .stream-pagination-copy {
@@ -829,8 +1059,8 @@ function renderAppShell(title: string, body: string): Response {
         border-style: dashed;
       }
       .reader-wrap {
-        min-height: calc(100vh - 68px);
-        padding: 36px 42px 56px;
+        min-height: 100%;
+        padding: 24px 28px 32px;
         display: flex;
         justify-content: center;
         align-items: flex-start;
@@ -838,12 +1068,12 @@ function renderAppShell(title: string, body: string): Response {
       .reader-intro,
       .reader-document {
         display: grid;
-        gap: 28px;
-        width: min(1080px, 100%);
-        padding: 46px 54px 60px;
+        gap: 20px;
+        width: min(1240px, 100%);
+        padding: 30px 34px 36px;
         background: linear-gradient(180deg, var(--paper) 0%, var(--paper-soft) 100%);
-        border-radius: 32px;
-        box-shadow: 0 16px 48px rgba(15, 23, 42, 0.08);
+        border-radius: 24px;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
         position: relative;
         overflow: hidden;
       }
@@ -852,7 +1082,7 @@ function renderAppShell(title: string, body: string): Response {
         content: "";
         position: absolute;
         inset: 0 0 auto 0;
-        height: 112px;
+        height: 88px;
         background: linear-gradient(180deg, rgba(122, 174, 255, 0.10) 0%, rgba(122, 174, 255, 0) 100%);
         pointer-events: none;
       }
@@ -870,55 +1100,52 @@ function renderAppShell(title: string, body: string): Response {
       }
       .reader-intro h1,
       .reader-title-row h1 {
-        font-size: clamp(38px, 4.2vw, 62px);
-        line-height: 1.04;
+        font-size: clamp(30px, 3.4vw, 42px);
+        line-height: 1.08;
         letter-spacing: -0.035em;
         color: var(--reader-text);
-        max-width: 14ch;
+        max-width: 18ch;
       }
       .reader-intro p,
       .reader-byline {
         font-size: 15px;
         color: var(--reader-muted);
-        line-height: 1.7;
-        max-width: 70ch;
+        line-height: 1.6;
+        max-width: 80ch;
       }
-      .reader-inline-meta,
-      .reader-statline {
+      .reader-inline-meta {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         border-top: 1px solid var(--reader-line);
         border-bottom: 1px solid var(--reader-line);
         background: rgba(250, 252, 255, 0.8);
       }
-      .reader-inline-meta > div,
-      .reader-statline > div {
+      .reader-inline-meta > div {
         display: grid;
         gap: 6px;
-        padding: 16px 0;
+        padding: 14px 0;
       }
-      .reader-inline-meta > div + div,
-      .reader-statline > div + div {
+      .reader-inline-meta > div + div {
         padding-left: 18px;
         margin-left: 18px;
         border-left: 1px solid var(--reader-line);
       }
       .reader-inline-meta span,
-      .reader-statline span {
+      .reader-meta-chip span {
         font-size: 11px;
         letter-spacing: 0.1em;
         text-transform: uppercase;
         color: var(--reader-muted);
       }
       .reader-inline-meta strong,
-      .reader-statline strong {
+      .reader-meta-chip strong {
         font-size: 14px;
         font-weight: 600;
         color: var(--reader-text);
       }
       .reader-header {
         display: grid;
-        gap: 18px;
+        gap: 14px;
       }
       .reader-title-row {
         display: flex;
@@ -941,11 +1168,65 @@ function renderAppShell(title: string, body: string): Response {
       .reader-byline {
         display: flex;
         flex-wrap: wrap;
+        gap: 10px 14px;
+      }
+      .reader-byline strong {
+        color: var(--reader-text);
+      }
+      .reader-code-banner {
+        display: grid;
+        gap: 8px;
+        padding: 18px 20px;
+        border-radius: 20px;
+        border: 1px solid rgba(122, 174, 255, 0.24);
+        background: linear-gradient(135deg, rgba(122, 174, 255, 0.16) 0%, rgba(122, 174, 255, 0.04) 100%);
+      }
+      .reader-code-label {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #466a96;
+      }
+      .reader-code-value {
+        font-size: clamp(28px, 4.6vw, 44px);
+        font-weight: 800;
+        line-height: 1;
+        letter-spacing: 0.16em;
+        color: #0f172a;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      }
+      .reader-code-hint {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--reader-muted);
+      }
+      .reader-meta-bar {
+        display: flex;
+        flex-wrap: wrap;
         gap: 12px;
+        padding-bottom: 4px;
+      }
+      .reader-meta-chip {
+        display: grid;
+        gap: 6px;
+        min-width: 0;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--reader-line);
+        background: rgba(255, 255, 255, 0.74);
       }
       .reader-section {
-        display: grid;
-        gap: 12px;
+        display: block;
+      }
+      .reader-section + .reader-section {
+        margin-top: 18px;
+      }
+      .reader-section-body {
+        margin-top: 2px;
+      }
+      .reader-section-body .reader-section-title {
+        margin-bottom: 12px;
       }
       .reader-section-title {
         font-size: 11px;
@@ -976,7 +1257,7 @@ function renderAppShell(title: string, body: string): Response {
       }
       .mail-body-frame {
         width: 100%;
-        min-height: 840px;
+        min-height: clamp(720px, calc(100vh - 260px), 1200px);
         border: 0;
         border-radius: 22px;
         background: #ffffff;
@@ -984,7 +1265,7 @@ function renderAppShell(title: string, body: string): Response {
       }
       .mail-body-text {
         margin: 0;
-        padding: 30px 32px;
+        padding: 24px 26px;
         white-space: pre-wrap;
         word-break: break-word;
         line-height: 1.8;
@@ -1056,13 +1337,28 @@ function renderAppShell(title: string, body: string): Response {
         *, *::before, *::after { transition: none !important; animation: none !important; }
       }
       @media (max-width: 1440px) {
-        .workspace { grid-template-columns: minmax(300px, 344px) minmax(0, 1fr); }
-        .reader-wrap { padding: 28px 28px 42px; }
+        .workspace { grid-template-columns: minmax(264px, 304px) minmax(0, 1fr); }
+        .reader-wrap { padding: 22px 24px 28px; }
         .reader-intro,
-        .reader-document { padding: 38px 40px 46px; }
+        .reader-document {
+          width: min(1120px, 100%);
+          padding: 28px 30px 34px;
+        }
+        .reader-intro h1,
+        .reader-title-row h1 {
+          font-size: clamp(28px, 3.2vw, 40px);
+        }
       }
       @media (max-width: 960px) {
-        .app-shell { grid-template-rows: auto 1fr; }
+        html, body {
+          height: auto;
+          overflow: auto;
+        }
+        .app-shell {
+          height: auto;
+          overflow: visible;
+          grid-template-rows: auto 1fr;
+        }
         .topbar {
           padding: 14px 16px;
           align-items: flex-start;
@@ -1085,18 +1381,63 @@ function renderAppShell(title: string, body: string): Response {
           width: 100%;
         }
         .workspace {
+          height: auto;
+          overflow: visible;
           grid-template-columns: 1fr;
           grid-template-areas:
             "stream"
             "reader";
         }
-        .pane { min-height: auto; }
+        .pane {
+          height: auto;
+          min-height: auto;
+          overflow: visible;
+        }
         .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
-        .reader-wrap { min-height: auto; }
-        .reader-inline-meta,
-        .reader-statline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .reader-inline-meta > div:nth-child(3),
-        .reader-statline > div:nth-child(3) { padding-left: 0; margin-left: 0; border-left: 0; }
+        .reader-wrap {
+          min-height: auto;
+          padding: 20px 16px 28px;
+        }
+        .reader-intro,
+        .reader-document {
+          padding: 30px 22px 34px;
+          border-radius: 24px;
+        }
+        .reader-inline-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .reader-inline-meta > div + div {
+          padding-left: 0;
+          margin-left: 0;
+          border-left: 0;
+        }
+        .reader-inline-meta > div:nth-child(odd) {
+          padding-right: 14px;
+          border-right: 1px solid var(--reader-line);
+        }
+        .reader-inline-meta > div:nth-child(n + 3) {
+          padding-left: 0;
+          border-top: 1px solid var(--reader-line);
+        }
+        .reader-meta-bar {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0;
+          border-top: 1px solid var(--reader-line);
+          border-bottom: 1px solid var(--reader-line);
+          background: rgba(250, 252, 255, 0.8);
+        }
+        .reader-meta-chip {
+          padding: 14px 0;
+          border: 0;
+          border-radius: 0;
+          background: transparent;
+        }
+        .reader-meta-chip:nth-child(odd) {
+          padding-right: 14px;
+          border-right: 1px solid var(--reader-line);
+        }
+        .reader-meta-chip:nth-child(n + 3) {
+          border-top: 1px solid var(--reader-line);
+        }
         .mail-body-frame { min-height: 520px; }
         .stream-pagination {
           align-items: flex-start;
@@ -1125,21 +1466,37 @@ function renderAppShell(title: string, body: string): Response {
         .reader-wrap { padding: 18px 16px 28px; }
         .reader-intro,
         .reader-document {
-          padding: 28px 22px 34px;
+          padding: 28px 18px 32px;
           border-radius: 24px;
-          gap: 22px;
+          gap: 20px;
+        }
+        .message-row-bottom {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .message-tags {
+          justify-content: flex-start;
         }
         .reader-title-row {
           flex-direction: column;
           gap: 16px;
         }
         .reader-inline-meta,
-        .reader-statline { grid-template-columns: 1fr; }
+        .reader-meta-bar { grid-template-columns: 1fr; }
+        .reader-inline-meta > div,
+        .reader-meta-chip {
+          padding-right: 0 !important;
+          border-right: 0 !important;
+        }
         .reader-inline-meta > div + div,
-        .reader-statline > div + div {
+        .reader-meta-chip + .reader-meta-chip {
           padding-left: 0;
           margin-left: 0;
           border-left: 0;
+        }
+        .reader-inline-meta > div:nth-child(n + 2),
+        .reader-meta-chip:nth-child(n + 2) {
+          border-top: 1px solid var(--reader-line);
         }
         .mail-body-frame { min-height: 440px; border-radius: 18px; }
         .mail-body-text { border-radius: 18px; }
@@ -1166,15 +1523,21 @@ export function renderLoginPage(input: {
           <div class="section-label">邮件工作台</div>
           <h1>登录只读邮件工作台</h1>
           <p class="login-muted">这里专注于多账号 Outlook 阅读。连接、路由和同步管理仍建议在 Slack 中完成。</p>
-          ${input.configured
-            ? `
-              ${input.error ? `<div class="login-alert">${escapeHtml(input.error)}</div>` : ""}
+          ${
+      input.configured
+        ? `
+              ${
+          input.error
+            ? `<div class="login-alert">${escapeHtml(input.error)}</div>`
+            : ""
+        }
               <form method="POST" action="/app/login">
                 <input class="login-input" type="password" name="password" placeholder="输入管理员密码" autocomplete="current-password" required />
                 <button class="login-button" type="submit">进入邮件工作台</button>
               </form>
             `
-            : `<div class="login-alert">当前未配置 <code>WEB_ADMIN_PASSWORD</code>，Web 控制台尚未启用。</div>`}
+        : `<div class="login-alert">当前未配置 <code>WEB_ADMIN_PASSWORD</code>，Web 控制台尚未启用。</div>`
+    }
         </section>
       </div>
     `,
@@ -1184,7 +1547,8 @@ export function renderLoginPage(input: {
 export function renderAppPage(state: WebConsoleState): Response {
   const selectedMailboxId = state.selectedMailbox?.connection.mailboxId;
   const selectedFolder = state.selectedFolder;
-  const mailboxLabel = state.selectedMailbox?.connection.displayName || state.selectedMailbox?.connection.emailAddress || "No mailbox";
+  const mailboxLabel = state.selectedMailbox?.connection.displayName ||
+    state.selectedMailbox?.connection.emailAddress || "No mailbox";
 
   return renderAppShell(
     "Mail Console",
@@ -1212,7 +1576,9 @@ export function renderAppPage(state: WebConsoleState): Response {
             </div>
             <div class="meta-block">
               <span>已载入</span>
-              <strong>${state.messages.length} 封邮件${state.pageIndex > 1 ? ` · 第 ${state.pageIndex} 页` : ""}</strong>
+              <strong>${state.messages.length} 封邮件${
+      state.pageIndex > 1 ? ` · 第 ${state.pageIndex} 页` : ""
+    }</strong>
             </div>
             <form method="POST" action="/app/logout">
               <button class="ghost-button" type="submit">退出</button>
@@ -1226,31 +1592,62 @@ export function renderAppPage(state: WebConsoleState): Response {
               <div class="section-label">消息流</div>
               <div class="stream-headline">
                 <h2>${escapeHtml(formatFolderLabel(selectedFolder))}</h2>
-                <div class="stream-meta">${state.selectedMailbox ? `${escapeHtml(mailboxLabel)} · ${escapeHtml(state.selectedMailbox.connection.emailAddress)}` : "连接邮箱后可在这里查看消息流。"}</div>
+                <div class="stream-meta">${
+      state.selectedMailbox
+        ? `${escapeHtml(mailboxLabel)} · ${
+          escapeHtml(state.selectedMailbox.connection.emailAddress)
+        }`
+        : "连接邮箱后可在这里查看消息流。"
+    }</div>
               </div>
-              ${state.selectedMailbox
-                ? `
+              ${
+      state.selectedMailbox
+        ? `
                   <div class="folder-tabs">
-                    <a class="folder-tab${selectedFolder === "inbox" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "inbox" })}">收件箱</a>
-                    <a class="folder-tab${selectedFolder === "junk" ? " is-active" : ""}" href="${appHref({ mailboxId: state.selectedMailbox.connection.mailboxId, folder: "junk" })}">垃圾邮件</a>
+                    <a class="folder-tab${
+          selectedFolder === "inbox" ? " is-active" : ""
+        }" href="${
+          appHref({
+            mailboxId: state.selectedMailbox.connection.mailboxId,
+            folder: "inbox",
+          })
+        }">收件箱</a>
+                    <a class="folder-tab${
+          selectedFolder === "junk" ? " is-active" : ""
+        }" href="${
+          appHref({
+            mailboxId: state.selectedMailbox.connection.mailboxId,
+            folder: "junk",
+          })
+        }">垃圾邮件</a>
                   </div>
                 `
-                : ""}
+        : ""
+    }
             </div>
-            ${state.error ? `<div class="stream-alert">${escapeHtml(state.error)}</div>` : ""}
-            ${!state.selectedMailbox
-              ? renderEmptyMailboxes()
-              : state.messages.length > 0
-              ? `
-                <div class="message-list">${state.messages.map((message) => renderMessageItem(state, message)).join("")}</div>
+            ${
+      state.error
+        ? `<div class="stream-alert">${escapeHtml(state.error)}</div>`
+        : ""
+    }
+            ${
+      !state.selectedMailbox
+        ? renderEmptyMailboxes()
+        : state.messages.length > 0
+        ? `
+                <div class="message-list">${
+          state.messages.map((message) => renderMessageItem(state, message))
+            .join("")
+        }</div>
                 ${renderMessagePagination(state)}
               `
-              : `
+        : `
                 <section class="empty-note">
                   <h3>这个文件夹里没有可展示邮件</h3>
                   <p>如果邮箱刚接入，可以先等待同步，或者在 Slack 中执行 <code>/mail sync &lt;mailbox&gt;</code>。</p>
                 </section>
-              `}
+              `
+    }
           </section>
 
           <main class="pane reader-pane">
