@@ -68,6 +68,18 @@ function appHref(input: {
   return query ? `/app?${query}` : "/app";
 }
 
+function readerFragmentHref(input: {
+  mailboxId?: string;
+  folder?: "inbox" | "junk";
+  messageId?: string;
+}): string {
+  const params = new URLSearchParams();
+  if (input.mailboxId) params.set("mailbox", input.mailboxId);
+  if (input.folder) params.set("folder", input.folder);
+  if (input.messageId) params.set("message", input.messageId);
+  return `/app/reader-fragment?${params.toString()}`;
+}
+
 function providerLabel(bundle: MailboxBundle): string {
   return bundle.connection.providerType === "ms_oauth2api"
     ? "msOauth2api"
@@ -216,14 +228,7 @@ function renderReaderIntro(state: WebConsoleState): string {
   `;
 }
 
-function renderMessageBody(
-  detail: WebMessageDetail | null,
-  state: WebConsoleState,
-): string {
-  if (!detail) {
-    return renderReaderIntro(state);
-  }
-
+function renderReaderDetail(detail: WebMessageDetail): string {
   const attachments = detail.message.attachments ?? [];
   const verificationCode = detectVerificationCode(
     `${detail.message.subject ?? ""}\n${detail.bodyPlainText ?? ""}`,
@@ -292,25 +297,7 @@ function renderMessageBody(
       : ""
   }
 
-      <section class="reader-meta-bar">
-        <div class="reader-meta-chip"><span>附件</span><strong>${attachments.length}</strong></div>
-        <div class="reader-meta-chip"><span>内联图</span><strong>${
-    detail.message.inlineImages?.length ?? 0
-  }</strong></div>
-        <div class="reader-meta-chip"><span>正文</span><strong>${
-    escapeHtml(detail.message.bodyContentType || "text")
-  }</strong></div>
-        <div class="reader-meta-chip"><span>文件夹</span><strong>${
-    escapeHtml(
-      formatFolderLabel(detail.message.folderKind, detail.message.folderName),
-    )
-  }</strong></div>
-      </section>
-
-      <section class="reader-section reader-section-body">
-        <div class="reader-section-title">正文</div>
-        ${bodyBlock}
-      </section>
+      ${bodyBlock}
 
       ${
     attachments.length > 0
@@ -342,6 +329,16 @@ function renderMessageBody(
   }
     </article>
   `;
+}
+
+function renderMessageBody(
+  detail: WebMessageDetail | null,
+  state: WebConsoleState,
+): string {
+  if (!detail) {
+    return renderReaderIntro(state);
+  }
+  return renderReaderDetail(detail);
 }
 
 function renderMailboxItem(
@@ -465,16 +462,34 @@ function renderMessageItem(
   const verificationCode = detectVerificationCode(
     `${message.subject ?? ""}\n${message.bodyPreview ?? ""}`,
   );
+  const mailboxId = state.selectedMailbox?.connection.mailboxId;
+  const folder = state.selectedFolder;
   return `
-    <a class="message-item${active ? " is-active" : ""}" href="${
+    <a
+      class="message-item${active ? " is-active" : ""}"
+      href="${
     appHref({
-      mailboxId: state.selectedMailbox?.connection.mailboxId,
-      folder: state.selectedFolder,
+      mailboxId,
+      folder,
       messageId: message.messageId,
       pageCursor: state.currentPageCursor,
       page: state.pageIndex > 1 ? state.pageIndex : undefined,
     })
-  }">
+  }"
+      data-message-id="${escapeHtml(message.messageId)}"
+      data-mailbox-id="${escapeHtml(mailboxId ?? "")}"
+      data-folder="${escapeHtml(folder)}"
+      data-fragment-url="${
+    escapeHtml(
+      readerFragmentHref({
+        mailboxId,
+        folder,
+        messageId: message.messageId,
+      }),
+    )
+  }"
+      ${active ? 'aria-current="true"' : ""}
+    >
       <div class="message-row-top">
         <span class="message-subject">${
     escapeHtml(message.subject || "(无主题)")
@@ -553,6 +568,192 @@ function renderEmptyMailboxes(): string {
       <h3>暂无邮箱</h3>
       <p>先在 Slack 里执行 <code>/mail connect graph</code>，连接至少一个 Outlook 账号后，这里才会显示消息流和阅读区。</p>
     </section>
+  `;
+}
+
+function renderReaderInteractionScript(): string {
+  return `
+    <script>
+      (() => {
+        const messageList = document.querySelector('[data-message-list]');
+        const readerPane = document.querySelector('[data-reader-pane]');
+        const readerWrap = document.querySelector('[data-reader-wrap]');
+        if (!messageList || !readerPane || !readerWrap || typeof window.fetch !== 'function' || !window.history || typeof window.history.pushState !== 'function') {
+          return;
+        }
+
+        const cache = new Map();
+        const inflight = new Map();
+        let activeController = null;
+        let activeFragmentUrl = '';
+
+        const listItems = () => Array.from(messageList.querySelectorAll('.message-item'));
+
+        function setLoading(loading) {
+          readerPane.classList.toggle('is-loading', loading);
+          readerPane.setAttribute('aria-busy', loading ? 'true' : 'false');
+        }
+
+        function setActive(item) {
+          for (const node of listItems()) {
+            const isActive = node === item;
+            node.classList.toggle('is-active', isActive);
+            if (isActive) node.setAttribute('aria-current', 'true');
+            else node.removeAttribute('aria-current');
+          }
+        }
+
+        function itemByHref(href) {
+          return listItems().find((item) => item.href === href) || null;
+        }
+
+        function trimCache() {
+          while (cache.size > 18) {
+            const oldestKey = cache.keys().next().value;
+            if (!oldestKey) break;
+            cache.delete(oldestKey);
+          }
+        }
+
+        function fetchFragment(url, signal) {
+          if (cache.has(url)) return Promise.resolve(cache.get(url));
+          if (inflight.has(url)) return inflight.get(url);
+
+          const request = fetch(url, {
+            credentials: 'same-origin',
+            headers: { 'x-requested-with': 'mail-console' },
+            signal,
+          }).then((response) => {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.text();
+          }).then((html) => {
+            cache.set(url, html);
+            trimCache();
+            inflight.delete(url);
+            return html;
+          }).catch((error) => {
+            inflight.delete(url);
+            throw error;
+          });
+
+          inflight.set(url, request);
+          return request;
+        }
+
+        function applyReader(html) {
+          readerWrap.innerHTML = html;
+          if (typeof readerPane.scrollTo === 'function') {
+            readerPane.scrollTo({ top: 0, behavior: 'auto' });
+          } else {
+            readerPane.scrollTop = 0;
+          }
+        }
+
+        function schedulePrefetch(item) {
+          if (!item) return;
+          const url = item.dataset.fragmentUrl;
+          if (!url || cache.has(url) || inflight.has(url)) return;
+
+          const run = () => fetchFragment(url).catch(() => {});
+          if ('requestIdleCallback' in window) {
+            window.requestIdleCallback(run, { timeout: 900 });
+          } else {
+            window.setTimeout(run, 120);
+          }
+        }
+
+        function scheduleNeighborPrefetch(item) {
+          if (!item) return;
+          const candidates = [item.previousElementSibling, item.nextElementSibling];
+          for (const candidate of candidates) {
+            if (candidate && candidate.classList && candidate.classList.contains('message-item')) {
+              schedulePrefetch(candidate);
+            }
+          }
+        }
+
+        async function activateItem(item, pushHistory) {
+          const fragmentUrl = item.dataset.fragmentUrl;
+          if (!fragmentUrl) {
+            window.location.href = item.href;
+            return;
+          }
+          if (item.classList.contains('is-active') && !activeFragmentUrl) return;
+          if (activeFragmentUrl === fragmentUrl) return;
+
+          if (activeController) activeController.abort();
+          activeController = new AbortController();
+          activeFragmentUrl = fragmentUrl;
+
+          setActive(item);
+          setLoading(true);
+
+          try {
+            const html = await fetchFragment(fragmentUrl, activeController.signal);
+            if (activeFragmentUrl !== fragmentUrl) return;
+            applyReader(html);
+            if (pushHistory) {
+              window.history.pushState({ href: item.href, fragmentUrl }, '', item.href);
+            } else {
+              window.history.replaceState({ href: item.href, fragmentUrl }, '', item.href);
+            }
+            scheduleNeighborPrefetch(item);
+          } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            window.location.href = item.href;
+          } finally {
+            if (activeFragmentUrl === fragmentUrl) {
+              activeFragmentUrl = '';
+              setLoading(false);
+            }
+          }
+        }
+
+        const initialItem = messageList.querySelector('.message-item.is-active');
+        if (initialItem && initialItem.dataset.fragmentUrl) {
+          window.history.replaceState(
+            { href: initialItem.href, fragmentUrl: initialItem.dataset.fragmentUrl },
+            '',
+            initialItem.href,
+          );
+          schedulePrefetch(initialItem);
+          scheduleNeighborPrefetch(initialItem);
+        }
+
+        messageList.addEventListener('click', (event) => {
+          if (event.defaultPrevented) return;
+          if (!(event.target instanceof Element)) return;
+          const item = event.target.closest('.message-item');
+          if (!item) return;
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          activateItem(item, true);
+        }, true);
+
+        messageList.addEventListener('pointerenter', (event) => {
+          if (!(event.target instanceof Element)) return;
+          const item = event.target.closest('.message-item');
+          if (!item) return;
+          schedulePrefetch(item);
+        }, true);
+
+        messageList.addEventListener('focusin', (event) => {
+          if (!(event.target instanceof Element)) return;
+          const item = event.target.closest('.message-item');
+          if (!item) return;
+          schedulePrefetch(item);
+        });
+
+        window.addEventListener('popstate', () => {
+          const item = itemByHref(window.location.href);
+          if (!item) {
+            window.location.reload();
+            return;
+          }
+          activateItem(item, false);
+        });
+      })();
+    </script>
   `;
 }
 
@@ -1064,6 +1265,13 @@ function renderAppShell(title: string, body: string): Response {
         display: flex;
         justify-content: center;
         align-items: flex-start;
+        transition: opacity 120ms ease;
+      }
+      .reader-pane.is-loading {
+        cursor: progress;
+      }
+      .reader-pane.is-loading .reader-wrap {
+        opacity: 0.72;
       }
       .reader-intro,
       .reader-document {
@@ -1544,6 +1752,14 @@ export function renderLoginPage(input: {
   );
 }
 
+export function renderReaderContentFragment(
+  detail: WebMessageDetail,
+): Response {
+  return new Response(renderReaderDetail(detail), {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 export function renderAppPage(state: WebConsoleState): Response {
   const selectedMailboxId = state.selectedMailbox?.connection.mailboxId;
   const selectedFolder = state.selectedFolder;
@@ -1553,7 +1769,7 @@ export function renderAppPage(state: WebConsoleState): Response {
   return renderAppShell(
     "Mail Console",
     `
-      <div class="app-shell">
+      <div class="app-shell" data-app-shell="mail-console">
         <header class="topbar">
           <div class="topbar-left">
             <div class="brand">
@@ -1635,7 +1851,7 @@ export function renderAppPage(state: WebConsoleState): Response {
         ? renderEmptyMailboxes()
         : state.messages.length > 0
         ? `
-                <div class="message-list">${
+                <div class="message-list" data-message-list>${
           state.messages.map((message) => renderMessageItem(state, message))
             .join("")
         }</div>
@@ -1650,13 +1866,14 @@ export function renderAppPage(state: WebConsoleState): Response {
     }
           </section>
 
-          <main class="pane reader-pane">
-            <div class="reader-wrap">
+          <main class="pane reader-pane" data-reader-pane aria-live="polite" aria-busy="false">
+            <div class="reader-wrap" data-reader-wrap>
               ${renderMessageBody(state.selectedMessage, state)}
             </div>
           </main>
         </div>
       </div>
+      ${renderReaderInteractionScript()}
     `,
   );
 }

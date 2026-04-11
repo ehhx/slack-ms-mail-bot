@@ -4,7 +4,11 @@ import {
   listAllMailboxBundlesForWeb,
   loadMailboxWebView,
 } from "../mail/service.ts";
-import type { MailFolderKind, MailMessageSummary, MailboxBundle } from "../mail/types.ts";
+import type {
+  MailboxBundle,
+  MailFolderKind,
+  MailMessageSummary,
+} from "../mail/types.ts";
 
 export interface WebMessageDetail {
   message: MailMessageSummary;
@@ -29,14 +33,19 @@ function normalizeFolderKind(input: string | null | undefined): MailFolderKind {
   return input === "junk" ? "junk" : "inbox";
 }
 
-function normalizePageIndex(input: string | null | undefined, hasCursor: boolean): number {
+function normalizePageIndex(
+  input: string | null | undefined,
+  hasCursor: boolean,
+): number {
   if (!hasCursor) return 1;
   const parsed = Number.parseInt(String(input ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed < 2) return 2;
   return parsed;
 }
 
-function buildMessageDetail(message: MailMessageSummary): WebMessageDetail {
+export function buildMessageDetail(
+  message: MailMessageSummary,
+): WebMessageDetail {
   return {
     message,
     bodyPlainText: notificationBodyText(message),
@@ -50,7 +59,9 @@ function replaceMailbox(
 ): MailboxBundle[] {
   if (!nextMailbox) return mailboxes;
   return mailboxes.map((mailbox) =>
-    mailbox.connection.mailboxId === nextMailbox.connection.mailboxId ? nextMailbox : mailbox
+    mailbox.connection.mailboxId === nextMailbox.connection.mailboxId
+      ? nextMailbox
+      : mailbox
   );
 }
 
@@ -78,12 +89,18 @@ export async function buildWebConsoleState(input: {
     };
   }
 
-  let selectedMailbox = mailboxes.find((mailbox) =>
-    mailbox.connection.mailboxId === input.mailboxId
-  ) ?? mailboxes.find((mailbox) => mailbox.connection.providerType === "graph_native") ?? mailboxes[0];
+  let selectedMailbox =
+    mailboxes.find((mailbox) =>
+      mailbox.connection.mailboxId === input.mailboxId
+    ) ??
+      mailboxes.find((mailbox) =>
+        mailbox.connection.providerType === "graph_native"
+      ) ?? mailboxes[0];
   let error: string | undefined;
 
-  if (input.mailboxId && selectedMailbox.connection.mailboxId !== input.mailboxId) {
+  if (
+    input.mailboxId && selectedMailbox.connection.mailboxId !== input.mailboxId
+  ) {
     error = "指定的邮箱不存在，已自动切换到第一个可用邮箱。";
   }
 
@@ -97,7 +114,8 @@ export async function buildWebConsoleState(input: {
       pageIndex: 1,
       hasPreviousPage: false,
       currentPageCursor: undefined,
-      error: error ?? "当前选中的邮箱使用 msOauth2api，Web 控制台暂只支持 Graph Native。",
+      error: error ??
+        "当前选中的邮箱使用 msOauth2api，Web 控制台暂只支持 Graph Native。",
     };
   }
 
@@ -122,7 +140,9 @@ export async function buildWebConsoleState(input: {
         });
         error = error ?? "分页游标已失效，已自动回到最新邮件。";
       } catch (fallbackError) {
-        const message = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        const message = fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
         return {
           mailboxes,
           selectedMailbox,
@@ -136,7 +156,9 @@ export async function buildWebConsoleState(input: {
         };
       }
     } else {
-      const message = listError instanceof Error ? listError.message : String(listError);
+      const message = listError instanceof Error
+        ? listError.message
+        : String(listError);
       return {
         mailboxes,
         selectedMailbox,
@@ -153,7 +175,9 @@ export async function buildWebConsoleState(input: {
   selectedMailbox = page.bundle;
   mailboxes = replaceMailbox(mailboxes, selectedMailbox);
 
-  const selectedMessage = page.selectedMessage ? buildMessageDetail(page.selectedMessage) : null;
+  const selectedMessage = page.selectedMessage
+    ? buildMessageDetail(page.selectedMessage)
+    : null;
 
   return {
     mailboxes,
@@ -163,13 +187,17 @@ export async function buildWebConsoleState(input: {
     selectedMessage,
     pageIndex,
     hasPreviousPage: pageIndex > 1,
-    currentPageCursor: pageIndex > 1 ? (input.pageCursor ?? undefined) : undefined,
+    currentPageCursor: pageIndex > 1
+      ? (input.pageCursor ?? undefined)
+      : undefined,
     error,
     nextPageCursor: page.nextPageCursor,
   };
 }
 
-export function toWebMailboxSummary(bundle: MailboxBundle): Record<string, unknown> {
+export function toWebMailboxSummary(
+  bundle: MailboxBundle,
+): Record<string, unknown> {
   return {
     mailboxId: bundle.connection.mailboxId,
     teamId: bundle.connection.teamId,
@@ -204,7 +232,9 @@ export function toWebMailboxSummary(bundle: MailboxBundle): Record<string, unkno
   };
 }
 
-export function toWebMessageSummary(message: MailMessageSummary): Record<string, unknown> {
+export function toWebMessageSummary(
+  message: MailMessageSummary,
+): Record<string, unknown> {
   return {
     messageId: message.messageId,
     internetMessageId: message.internetMessageId,
@@ -221,7 +251,9 @@ export function toWebMessageSummary(message: MailMessageSummary): Record<string,
   };
 }
 
-export function toWebMessageDetail(detail: WebMessageDetail): Record<string, unknown> {
+export function toWebMessageDetail(
+  detail: WebMessageDetail,
+): Record<string, unknown> {
   return {
     ...toWebMessageSummary(detail.message),
     bodyContentType: detail.message.bodyContentType,

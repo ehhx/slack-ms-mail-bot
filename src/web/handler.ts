@@ -1,5 +1,4 @@
 import { getConfigAsync } from "../config.ts";
-import { notificationBodyText } from "../mail/message.ts";
 import {
   getMailboxMessageForWeb,
   listAllMailboxBundlesForWeb,
@@ -13,12 +12,17 @@ import {
   verifyWebAdminPassword,
 } from "./auth.ts";
 import {
+  buildMessageDetail,
   buildWebConsoleState,
   toWebMailboxSummary,
   toWebMessageDetail,
   toWebMessageSummary,
 } from "./service.ts";
-import { renderAppPage, renderLoginPage } from "./ui.ts";
+import {
+  renderAppPage,
+  renderLoginPage,
+  renderReaderContentFragment,
+} from "./ui.ts";
 
 function redirect(location: string, headers?: HeadersInit): Response {
   return new Response(null, {
@@ -45,7 +49,9 @@ function matchPath(pathname: string, pattern: RegExp): RegExpMatchArray | null {
   return pathname.match(pattern);
 }
 
-export async function handleWebRequest(request: Request): Promise<Response | null> {
+export async function handleWebRequest(
+  request: Request,
+): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith("/app") && !url.pathname.startsWith("/api/")) {
     return null;
@@ -61,7 +67,10 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
   const config = await getConfigAsync();
 
   if (url.pathname === "/app/login" && request.method === "GET") {
-    if (isWebConsoleEnabled(config) && await isWebAdminAuthenticated(request, config)) {
+    if (
+      isWebConsoleEnabled(config) &&
+      await isWebAdminAuthenticated(request, config)
+    ) {
       return redirect("/app");
     }
     return renderLoginPage({ configured: isWebConsoleEnabled(config) });
@@ -96,7 +105,10 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
 
   if (!isWebConsoleEnabled(config)) {
     return url.pathname.startsWith("/api/")
-      ? apiUnauthorizedResponse("WEB_ADMIN_PASSWORD 未配置，Web 控制台不可用。", 503)
+      ? apiUnauthorizedResponse(
+        "WEB_ADMIN_PASSWORD 未配置，Web 控制台不可用。",
+        503,
+      )
       : renderLoginPage({ configured: false });
   }
 
@@ -118,6 +130,31 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
     return renderAppPage(state);
   }
 
+  if (url.pathname === "/app/reader-fragment" && request.method === "GET") {
+    const mailboxId = url.searchParams.get("mailbox");
+    const messageId = url.searchParams.get("message");
+    if (!mailboxId || !messageId) {
+      return new Response("Missing mailbox or message", { status: 400 });
+    }
+
+    try {
+      const detail = await getMailboxMessageForWeb({
+        mailboxId,
+        messageId,
+        folderKind: url.searchParams.get("folder") ?? "inbox",
+      });
+      return renderReaderContentFragment(buildMessageDetail(detail.message));
+    } catch (error) {
+      return new Response(
+        error instanceof Error ? error.message : String(error),
+        {
+          status: 400,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        },
+      );
+    }
+  }
+
   if (url.pathname === "/api/mailboxes" && request.method === "GET") {
     const mailboxes = await listAllMailboxBundlesForWeb();
     return jsonResponse({
@@ -126,7 +163,10 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
     });
   }
 
-  const messageListMatch = matchPath(url.pathname, /^\/api\/mailboxes\/([^/]+)\/messages$/);
+  const messageListMatch = matchPath(
+    url.pathname,
+    /^\/api\/mailboxes\/([^/]+)\/messages$/,
+  );
   if (messageListMatch && request.method === "GET") {
     try {
       const mailboxId = decodeURIComponent(messageListMatch[1]);
@@ -162,11 +202,7 @@ export async function handleWebRequest(request: Request): Promise<Response | nul
       });
       return jsonResponse({
         mailbox: toWebMailboxSummary(detail.bundle),
-        message: toWebMessageDetail({
-          message: detail.message,
-          bodyPlainText: notificationBodyText(detail.message),
-          bodyHtml: detail.message.bodyContentType === "html" ? detail.message.bodyText : undefined,
-        }),
+        message: toWebMessageDetail(buildMessageDetail(detail.message)),
       });
     } catch (error) {
       return jsonResponse(
