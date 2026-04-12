@@ -18,6 +18,19 @@ function fmtTime(iso: string | undefined): string {
   return parsed.toLocaleString("zh-CN", { hour12: false });
 }
 
+function fmtListTime(iso: string | undefined): string {
+  if (!iso) return "-";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function compactText(input: string | undefined): string {
   return (input ?? "").replace(/\s+/g, " ").trim();
 }
@@ -495,7 +508,7 @@ function renderMessageItem(
     escapeHtml(message.subject || "(无主题)")
   }</span>
         <span class="message-time">${
-    escapeHtml(fmtTime(message.receivedDateTime))
+    escapeHtml(fmtListTime(message.receivedDateTime))
   }</span>
       </div>
       <div class="message-row-bottom">
@@ -1008,7 +1021,7 @@ function renderAppShell(title: string, body: string): Response {
         height: calc(100vh - 68px);
         min-height: 0;
         display: grid;
-        grid-template-columns: minmax(272px, 320px) minmax(0, 1fr);
+        grid-template-columns: minmax(244px, 292px) minmax(0, 1fr);
         grid-template-areas: "stream reader";
         overflow: hidden;
       }
@@ -1039,7 +1052,7 @@ function renderAppShell(title: string, body: string): Response {
       .pane + .pane { border-left: 1px solid var(--line); }
       .stream-pane {
         grid-area: stream;
-        padding: 0 0 18px;
+        padding: 0 0 12px;
         background: var(--shell-2);
       }
       .reader-pane {
@@ -1055,28 +1068,21 @@ function renderAppShell(title: string, body: string): Response {
         color: var(--muted);
       }
       .stream-head {
-        display: grid;
-        gap: 8px;
+        display: block;
         position: sticky;
         top: 0;
         z-index: 4;
-        padding: 18px 16px 12px;
+        padding: 10px 12px 8px;
       }
       .stream-head {
         background: linear-gradient(180deg, rgba(13, 21, 33, 0.99) 0%, rgba(13, 21, 33, 0.92) 72%, rgba(13, 21, 33, 0) 100%);
       }
-      .stream-head h2,
       .empty-note h3,
       .login-panel h1,
       .reader-intro h1,
       .reader-title-row h1 {
         margin: 0;
       }
-      .stream-head h2 {
-        font-size: 21px;
-        letter-spacing: -0.03em;
-      }
-      .stream-head p,
       .empty-note p,
       .login-panel p,
       .reader-intro p {
@@ -1084,37 +1090,42 @@ function renderAppShell(title: string, body: string): Response {
         color: var(--muted);
         line-height: 1.6;
       }
+      .stream-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
       .message-list {
         display: grid;
         gap: 0;
         content-visibility: auto;
-        contain-intrinsic-size: 720px;
+        contain-intrinsic-size: 560px;
       }
       .message-item {
         position: relative;
         display: grid;
-        gap: 9px;
-        transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+        gap: 6px;
+        transition: background-color 120ms ease, color 120ms ease;
         content-visibility: auto;
-        contain-intrinsic-size: 78px;
+        contain-intrinsic-size: 64px;
       }
       .message-item {
-        padding: 14px 16px 14px 18px;
+        padding: 10px 12px 10px 14px;
         border-bottom: 1px solid var(--line);
       }
       .message-item::before {
         content: "";
         position: absolute;
         left: 0;
-        top: 16px;
-        bottom: 16px;
+        top: 10px;
+        bottom: 10px;
         width: 3px;
         border-radius: 999px;
         background: transparent;
       }
       .message-item:hover {
         background: rgba(255, 255, 255, 0.03);
-        transform: translateX(1px);
       }
       .message-item.is-active {
         background: linear-gradient(90deg, var(--accent-soft) 0%, rgba(122, 174, 255, 0.03) 100%);
@@ -1125,47 +1136,54 @@ function renderAppShell(title: string, body: string): Response {
         -webkit-box-orient: vertical;
         -webkit-line-clamp: 2;
         overflow: hidden;
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 650;
-        line-height: 1.35;
+        line-height: 1.4;
       }
       .message-sender,
       .message-time {
-        font-size: 13px;
+        font-size: 12px;
         color: var(--muted);
       }
-      .message-sender { line-height: 1.5; }
+      .message-sender {
+        min-width: 0;
+        line-height: 1.4;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .message-row-top {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 8px;
       }
       .message-row-bottom {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 10px;
+        gap: 8px;
       }
       .message-time {
         flex: 0 0 auto;
         white-space: nowrap;
+        font-variant-numeric: tabular-nums;
       }
       .message-tags {
         display: flex;
         align-items: center;
         justify-content: flex-end;
-        gap: 6px;
+        gap: 4px;
         flex-wrap: wrap;
       }
       .message-chip {
         width: fit-content;
-        padding: 4px 8px;
+        padding: 3px 6px;
         border-radius: 999px;
         border: 1px solid rgba(148, 163, 184, 0.16);
         background: rgba(255, 255, 255, 0.04);
-        font-size: 11px;
-        letter-spacing: 0.08em;
+        font-size: 10px;
+        letter-spacing: 0.06em;
         text-transform: uppercase;
         color: var(--muted);
       }
@@ -1177,40 +1195,43 @@ function renderAppShell(title: string, body: string): Response {
         font-weight: 700;
       }
       .folder-tabs {
-        display: flex;
-        gap: 22px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .stream-count {
+        flex: 0 0 auto;
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .stream-count strong {
+        color: var(--text);
+      }
+      .folder-tabs {
         align-items: center;
       }
       .folder-tab {
         position: relative;
-        padding: 6px 0 10px;
-        font-size: 13px;
+        padding: 7px 12px;
+        border-radius: 999px;
+        font-size: 12px;
         color: var(--muted);
       }
       .folder-tab.is-active {
         color: var(--text);
+        background: rgba(122, 174, 255, 0.12);
       }
       .folder-tab.is-active::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        height: 2px;
-        border-radius: 999px;
-        background: var(--accent);
-      }
-      .stream-headline {
-        display: grid;
-        gap: 6px;
-      }
-      .stream-meta {
-        font-size: 13px;
-        color: var(--muted);
+        display: none;
       }
       .stream-alert {
-        margin: 0 16px 12px;
-        padding: 12px 14px;
+        margin: 0 12px 10px;
+        padding: 10px 12px;
         border-radius: 14px;
         border: 1px solid rgba(220, 38, 38, 0.24);
         background: rgba(220, 38, 38, 0.08);
@@ -1222,8 +1243,8 @@ function renderAppShell(title: string, body: string): Response {
         align-items: center;
         justify-content: space-between;
         gap: 16px;
-        margin: 12px 16px 0;
-        padding-top: 16px;
+        margin: 10px 12px 0;
+        padding-top: 14px;
         border-top: 1px solid var(--line);
       }
       .stream-pagination-copy {
@@ -1545,7 +1566,7 @@ function renderAppShell(title: string, body: string): Response {
         *, *::before, *::after { transition: none !important; animation: none !important; }
       }
       @media (max-width: 1440px) {
-        .workspace { grid-template-columns: minmax(264px, 304px) minmax(0, 1fr); }
+        .workspace { grid-template-columns: minmax(232px, 272px) minmax(0, 1fr); }
         .reader-wrap { padding: 22px 24px 28px; }
         .reader-intro,
         .reader-document {
@@ -1805,22 +1826,12 @@ export function renderAppPage(state: WebConsoleState): Response {
         <div class="workspace">
           <section class="pane stream-pane">
             <div class="stream-head">
-              <div class="section-label">消息流</div>
-              <div class="stream-headline">
-                <h2>${escapeHtml(formatFolderLabel(selectedFolder))}</h2>
-                <div class="stream-meta">${
-      state.selectedMailbox
-        ? `${escapeHtml(mailboxLabel)} · ${
-          escapeHtml(state.selectedMailbox.connection.emailAddress)
-        }`
-        : "连接邮箱后可在这里查看消息流。"
-    }</div>
-              </div>
               ${
       state.selectedMailbox
         ? `
-                  <div class="folder-tabs">
-                    <a class="folder-tab${
+                  <div class="stream-toolbar">
+                    <div class="folder-tabs">
+                      <a class="folder-tab${
           selectedFolder === "inbox" ? " is-active" : ""
         }" href="${
           appHref({
@@ -1828,7 +1839,7 @@ export function renderAppPage(state: WebConsoleState): Response {
             folder: "inbox",
           })
         }">收件箱</a>
-                    <a class="folder-tab${
+                      <a class="folder-tab${
           selectedFolder === "junk" ? " is-active" : ""
         }" href="${
           appHref({
@@ -1836,9 +1847,11 @@ export function renderAppPage(state: WebConsoleState): Response {
             folder: "junk",
           })
         }">垃圾邮件</a>
+                    </div>
+                    <div class="stream-count">${state.messages.length} 封</div>
                   </div>
                 `
-        : ""
+        : `<div class="section-label">消息流</div>`
     }
             </div>
             ${
