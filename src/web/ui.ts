@@ -302,8 +302,22 @@ function renderReaderDetail(detail: WebMessageDetail): string {
     verificationCode
       ? `
           <section class="reader-code-banner">
-            <div class="reader-code-label">验证码</div>
-            <div class="reader-code-value">${escapeHtml(verificationCode)}</div>
+            <div class="reader-code-row">
+              <div class="reader-code-main">
+                <div class="reader-code-label">验证码</div>
+                <div class="reader-code-value">${
+        escapeHtml(verificationCode)
+      }</div>
+              </div>
+              <button
+                class="reader-code-copy"
+                type="button"
+                data-copy-code="${escapeHtml(verificationCode)}"
+                data-copy-default="复制验证码"
+              >
+                复制验证码
+              </button>
+            </div>
             <div class="reader-code-hint">已从主题或正文中提取，下面仍保留完整正文方便继续核对上下文。</div>
           </section>
         `
@@ -475,6 +489,15 @@ function renderMessageItem(
   const verificationCode = detectVerificationCode(
     `${message.subject ?? ""}\n${message.bodyPreview ?? ""}`,
   );
+  const searchText = compactText(
+    [
+      message.subject,
+      message.fromName,
+      message.fromAddress,
+      message.bodyPreview,
+      verificationCode ?? "",
+    ].filter(Boolean).join(" "),
+  );
   const mailboxId = state.selectedMailbox?.connection.mailboxId;
   const folder = state.selectedFolder;
   return `
@@ -492,6 +515,9 @@ function renderMessageItem(
       data-message-id="${escapeHtml(message.messageId)}"
       data-mailbox-id="${escapeHtml(mailboxId ?? "")}"
       data-folder="${escapeHtml(folder)}"
+      data-search-text="${escapeHtml(searchText)}"
+      data-has-code="${verificationCode ? "true" : "false"}"
+      data-has-attachments="${message.hasAttachments ? "true" : "false"}"
       data-fragment-url="${
     escapeHtml(
       readerFragmentHref({
@@ -595,12 +621,18 @@ function renderReaderInteractionScript(): string {
           return;
         }
 
+        const searchInput = document.querySelector('[data-message-search]');
+        const filterButtons = Array.from(document.querySelectorAll('[data-message-filter]'));
+        const streamCount = document.querySelector('[data-stream-count]');
+        const filterEmpty = document.querySelector('[data-filter-empty]');
         const cache = new Map();
         const inflight = new Map();
         let activeController = null;
         let activeFragmentUrl = '';
+        let activeFilter = 'all';
 
         const listItems = () => Array.from(messageList.querySelectorAll('.message-item'));
+        const visibleItems = () => listItems().filter((item) => !item.hidden);
 
         function setLoading(loading) {
           readerPane.classList.toggle('is-loading', loading);
@@ -618,6 +650,55 @@ function renderReaderInteractionScript(): string {
 
         function itemByHref(href) {
           return listItems().find((item) => item.href === href) || null;
+        }
+
+        function normalizeText(value) {
+          return String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+        }
+
+        function updateCount() {
+          if (!streamCount) return;
+          const total = listItems().length;
+          const visible = visibleItems().length;
+          streamCount.textContent = visible === total ? total + ' 封' : visible + ' / ' + total + ' 封';
+        }
+
+        function updateFilterButtons() {
+          for (const button of filterButtons) {
+            const active = button.dataset.messageFilter === activeFilter;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+          }
+        }
+
+        function applyListFilters() {
+          const query = normalizeText(searchInput ? searchInput.value : '');
+          let visibleCount = 0;
+
+          for (const item of listItems()) {
+            const haystack = normalizeText(item.dataset.searchText);
+            const matchesQuery = !query || haystack.includes(query);
+            const matchesFilter =
+              activeFilter === 'all' ||
+              (activeFilter === 'code' && item.dataset.hasCode === 'true') ||
+              (activeFilter === 'attachments' && item.dataset.hasAttachments === 'true');
+            const matched = matchesQuery && matchesFilter;
+
+            item.hidden = !matched;
+            item.classList.toggle('is-hidden', !matched);
+            if (matched) visibleCount += 1;
+          }
+
+          if (filterEmpty) {
+            filterEmpty.hidden = visibleCount > 0;
+          }
+
+          updateFilterButtons();
+          updateCount();
+        }
+
+        function currentVisibleItem() {
+          return messageList.querySelector('.message-item.is-active:not([hidden])') || visibleItems()[0] || null;
         }
 
         function trimCache() {
@@ -677,15 +758,16 @@ function renderReaderInteractionScript(): string {
 
         function scheduleNeighborPrefetch(item) {
           if (!item) return;
-          const candidates = [item.previousElementSibling, item.nextElementSibling];
-          for (const candidate of candidates) {
-            if (candidate && candidate.classList && candidate.classList.contains('message-item')) {
-              schedulePrefetch(candidate);
-            }
+          const candidates = visibleItems();
+          const index = candidates.indexOf(item);
+          if (index === -1) return;
+          for (const candidate of [candidates[index - 1], candidates[index + 1]]) {
+            if (candidate) schedulePrefetch(candidate);
           }
         }
 
         async function activateItem(item, pushHistory) {
+          if (!item || item.hidden) return;
           const fragmentUrl = item.dataset.fragmentUrl;
           if (!fragmentUrl) {
             window.location.href = item.href;
@@ -722,6 +804,61 @@ function renderReaderInteractionScript(): string {
           }
         }
 
+        function shouldIgnoreShortcut(target) {
+          if (!(target instanceof Element)) return false;
+          if (target.closest('input, textarea, select, button, [contenteditable="true"]')) return true;
+          const linkedTarget = target.closest('a[href]');
+          return Boolean(linkedTarget && !linkedTarget.classList.contains('message-item'));
+        }
+
+        function copyText(text) {
+          if (!text) return Promise.reject(new Error('Missing text'));
+          if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+          }
+          return new Promise((resolve, reject) => {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+              document.execCommand('copy');
+              resolve();
+            } catch (error) {
+              reject(error);
+            } finally {
+              document.body.removeChild(textarea);
+            }
+          });
+        }
+
+        function updateCopyButtonState(button, label, copied) {
+          if (!button) return;
+          const fallbackLabel = button.dataset.copyDefault || '复制验证码';
+          if (button.__copyStateTimer) window.clearTimeout(button.__copyStateTimer);
+          button.textContent = label;
+          button.classList.toggle('is-copied', Boolean(copied));
+          button.__copyStateTimer = window.setTimeout(() => {
+            button.textContent = fallbackLabel;
+            button.classList.remove('is-copied');
+          }, copied ? 1400 : 1800);
+        }
+
+        async function handleCopyCode(button) {
+          const code = button && button.dataset ? button.dataset.copyCode : '';
+          if (!code) return;
+          try {
+            await copyText(code);
+            updateCopyButtonState(button, '已复制', true);
+          } catch (_error) {
+            updateCopyButtonState(button, '复制失败', false);
+          }
+        }
+
         const initialItem = messageList.querySelector('.message-item.is-active');
         if (initialItem && initialItem.dataset.fragmentUrl) {
           window.history.replaceState(
@@ -731,6 +868,28 @@ function renderReaderInteractionScript(): string {
           );
           schedulePrefetch(initialItem);
           scheduleNeighborPrefetch(initialItem);
+        }
+
+        applyListFilters();
+
+        if (searchInput) {
+          searchInput.addEventListener('input', () => {
+            applyListFilters();
+          });
+          searchInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && searchInput.value) {
+              event.preventDefault();
+              searchInput.value = '';
+              applyListFilters();
+            }
+          });
+        }
+
+        for (const button of filterButtons) {
+          button.addEventListener('click', () => {
+            activeFilter = button.dataset.messageFilter || 'all';
+            applyListFilters();
+          });
         }
 
         messageList.addEventListener('click', (event) => {
@@ -755,6 +914,74 @@ function renderReaderInteractionScript(): string {
           const item = event.target.closest('.message-item');
           if (!item) return;
           schedulePrefetch(item);
+        });
+
+        document.addEventListener('click', (event) => {
+          if (!(event.target instanceof Element)) return;
+          const button = event.target.closest('[data-copy-code]');
+          if (!button) return;
+          event.preventDefault();
+          handleCopyCode(button);
+        });
+
+        window.addEventListener('keydown', (event) => {
+          if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+          if (shouldIgnoreShortcut(event.target)) return;
+
+          const key = event.key;
+          const lowerKey = key.toLowerCase();
+
+          if (key === '/') {
+            if (!searchInput) return;
+            event.preventDefault();
+            searchInput.focus();
+            searchInput.select();
+            return;
+          }
+
+          if (lowerKey === 'y') {
+            const copyButton = readerWrap.querySelector('[data-copy-code]');
+            if (!copyButton) return;
+            event.preventDefault();
+            handleCopyCode(copyButton);
+            return;
+          }
+
+          if (lowerKey === 'j') {
+            const items = visibleItems();
+            if (!items.length) return;
+            event.preventDefault();
+            const current = currentVisibleItem();
+            const index = current ? items.indexOf(current) : -1;
+            const next = items[Math.min(items.length - 1, Math.max(0, index + 1))];
+            if (next) {
+              next.focus({ preventScroll: true });
+              activateItem(next, true);
+            }
+            return;
+          }
+
+          if (lowerKey === 'k') {
+            const items = visibleItems();
+            if (!items.length) return;
+            event.preventDefault();
+            const current = currentVisibleItem();
+            const index = current ? items.indexOf(current) : items.length;
+            const previous = items[Math.max(0, index - 1)];
+            if (previous) {
+              previous.focus({ preventScroll: true });
+              activateItem(previous, true);
+            }
+            return;
+          }
+
+          if (lowerKey === 'o' || key === 'Enter') {
+            const current = currentVisibleItem();
+            if (!current) return;
+            event.preventDefault();
+            current.focus({ preventScroll: true });
+            activateItem(current, true);
+          }
         });
 
         window.addEventListener('popstate', () => {
@@ -1096,11 +1323,76 @@ function renderAppShell(title: string, body: string): Response {
         justify-content: space-between;
         gap: 10px;
       }
+      .stream-tools {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .stream-search {
+        display: flex;
+      }
+      .stream-search-input {
+        width: 100%;
+        min-height: 38px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text);
+        outline: none;
+      }
+      .stream-search-input::placeholder {
+        color: var(--muted);
+      }
+      .stream-search-input:focus {
+        border-color: rgba(122, 174, 255, 0.44);
+        box-shadow: 0 0 0 3px rgba(122, 174, 255, 0.14);
+      }
+      .stream-filter-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .stream-filter-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .stream-filter {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 30px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.02);
+        color: var(--muted);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .stream-filter.is-active {
+        border-color: rgba(122, 174, 255, 0.34);
+        background: rgba(122, 174, 255, 0.12);
+        color: var(--text);
+      }
+      .stream-keyhint {
+        font-size: 11px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
       .message-list {
         display: grid;
         gap: 0;
         content-visibility: auto;
         contain-intrinsic-size: 560px;
+      }
+      .message-item[hidden],
+      .message-item.is-hidden {
+        display: none !important;
       }
       .message-item {
         position: relative;
@@ -1237,6 +1529,15 @@ function renderAppShell(title: string, body: string): Response {
         background: rgba(220, 38, 38, 0.08);
         color: #fecaca;
         font-size: 13px;
+      }
+      .stream-filter-empty {
+        margin: 8px 12px 0;
+        padding: 12px 14px;
+        border: 1px dashed var(--line);
+        border-radius: 14px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
       }
       .stream-pagination {
         display: flex;
@@ -1410,6 +1711,17 @@ function renderAppShell(title: string, body: string): Response {
         border: 1px solid rgba(122, 174, 255, 0.24);
         background: linear-gradient(135deg, rgba(122, 174, 255, 0.16) 0%, rgba(122, 174, 255, 0.04) 100%);
       }
+      .reader-code-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .reader-code-main {
+        min-width: 0;
+        display: grid;
+        gap: 8px;
+      }
       .reader-code-label {
         font-size: 11px;
         font-weight: 700;
@@ -1424,6 +1736,26 @@ function renderAppShell(title: string, body: string): Response {
         letter-spacing: 0.16em;
         color: #0f172a;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+      }
+      .reader-code-copy {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 16px;
+        border: 1px solid rgba(15, 23, 42, 0.14);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.74);
+        color: #0f172a;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .reader-code-copy.is-copied {
+        border-color: rgba(37, 99, 235, 0.26);
+        background: rgba(37, 99, 235, 0.12);
+        color: #0f172a;
       }
       .reader-code-hint {
         font-size: 13px;
@@ -1623,6 +1955,21 @@ function renderAppShell(title: string, body: string): Response {
           overflow: visible;
         }
         .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+        .stream-head {
+          padding: 10px 14px 8px;
+        }
+        .stream-toolbar {
+          flex-wrap: wrap;
+        }
+        .stream-filter-row {
+          align-items: flex-start;
+        }
+        .stream-keyhint {
+          white-space: normal;
+        }
+        .stream-count {
+          font-size: 11px;
+        }
         .reader-wrap {
           min-height: auto;
           padding: 20px 16px 28px;
@@ -1692,6 +2039,24 @@ function renderAppShell(title: string, body: string): Response {
           white-space: normal;
         }
         .ghost-button { width: fit-content; }
+        .stream-toolbar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .stream-filter-row,
+        .reader-code-row {
+          align-items: stretch;
+          flex-direction: column;
+        }
+        .stream-filter-group {
+          width: 100%;
+        }
+        .folder-tabs {
+          width: fit-content;
+        }
+        .stream-count {
+          align-self: flex-start;
+        }
         .reader-wrap { padding: 18px 16px 28px; }
         .reader-intro,
         .reader-document {
@@ -1782,10 +2147,10 @@ export function renderReaderContentFragment(
 }
 
 export function renderAppPage(state: WebConsoleState): Response {
-  const selectedMailboxId = state.selectedMailbox?.connection.mailboxId;
   const selectedFolder = state.selectedFolder;
   const mailboxLabel = state.selectedMailbox?.connection.displayName ||
     state.selectedMailbox?.connection.emailAddress || "No mailbox";
+  const hasMessages = state.messages.length > 0;
 
   return renderAppShell(
     "Mail Console",
@@ -1848,8 +2213,33 @@ export function renderAppPage(state: WebConsoleState): Response {
           })
         }">垃圾邮件</a>
                     </div>
-                    <div class="stream-count">${state.messages.length} 封</div>
+                    <div class="stream-count" data-stream-count>${state.messages.length} 封</div>
                   </div>
+                  ${
+          hasMessages
+            ? `
+                    <div class="stream-tools">
+                      <label class="stream-search">
+                        <input
+                          class="stream-search-input"
+                          type="search"
+                          placeholder="搜索当前页主题、发件人或验证码"
+                          aria-label="搜索当前页邮件"
+                          data-message-search
+                        />
+                      </label>
+                      <div class="stream-filter-row">
+                        <div class="stream-filter-group" role="toolbar" aria-label="邮件筛选">
+                          <button class="stream-filter is-active" type="button" data-message-filter="all" aria-pressed="true">全部</button>
+                          <button class="stream-filter" type="button" data-message-filter="code" aria-pressed="false">验证码</button>
+                          <button class="stream-filter" type="button" data-message-filter="attachments" aria-pressed="false">附件</button>
+                        </div>
+                        <div class="stream-keyhint">/ 搜索 · J/K 切换 · Y 复制验证码</div>
+                      </div>
+                    </div>
+                  `
+            : ""
+        }
                 `
         : `<div class="section-label">消息流</div>`
     }
@@ -1868,6 +2258,9 @@ export function renderAppPage(state: WebConsoleState): Response {
           state.messages.map((message) => renderMessageItem(state, message))
             .join("")
         }</div>
+                <div class="stream-filter-empty" data-filter-empty hidden>
+                  当前页没有匹配邮件，可以清空搜索或切到更早分页继续找。
+                </div>
                 ${renderMessagePagination(state)}
               `
         : `
