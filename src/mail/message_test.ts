@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   attachmentSummaryText,
   buildDedupeKey,
+  detectVerificationCode,
   htmlToPlainText,
   notificationBodyText,
   toPreviewText,
@@ -34,7 +35,9 @@ Deno.test("toPreviewText normalizes whitespace and truncates", () => {
 
 Deno.test("htmlToPlainText strips markup and decodes entities", () => {
   assertEquals(
-    htmlToPlainText("<p>Hello&nbsp;<strong>world</strong><br>Tom &amp; Jerry</p>"),
+    htmlToPlainText(
+      "<p>Hello&nbsp;<strong>world</strong><br>Tom &amp; Jerry</p>",
+    ),
     "Hello world\nTom & Jerry",
   );
 });
@@ -75,10 +78,35 @@ Deno.test("notificationBodyText falls back to image-only hint", () => {
   );
 });
 
+Deno.test("detectVerificationCode prefers body code over subject brand word", () => {
+  assertEquals(
+    detectVerificationCode({
+      subject: "Your login code for Nous Research",
+      body:
+        "Log in to Nous Research\nYour code is\n123522\nThis code expires in 10 minutes.",
+    }),
+    "123522",
+  );
+});
+
+Deno.test("detectVerificationCode still detects subject short code when subject contains digits", () => {
+  assertEquals(
+    detectVerificationCode({
+      subject: "Your ChatGPT code is 253225",
+    }),
+    "253225",
+  );
+});
+
 Deno.test("attachmentSummaryText formats attachment list", () => {
   assertEquals(
     attachmentSummaryText([
-      { name: "diagram.png", contentType: "image/png", size: 2048, isInline: true },
+      {
+        name: "diagram.png",
+        contentType: "image/png",
+        size: 2048,
+        isInline: true,
+      },
       { name: "spec.pdf", contentType: "application/pdf", size: 10 * 1024 },
     ]),
     "*附件* (2)\n• diagram.png (inline, image/png, 2 KB)\n• spec.pdf (application/pdf, 10 KB)",

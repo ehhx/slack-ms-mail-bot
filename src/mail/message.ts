@@ -1,16 +1,20 @@
 import type {
   MailAttachmentSummary,
+  MailboxBundle,
   MailFolderKind,
   MailMessageSummary,
-  MailboxBundle,
 } from "./types.ts";
 
 export function formatMailboxRef(mailboxId: string): string {
   return mailboxId.length > 8 ? mailboxId.slice(0, 8) : mailboxId;
 }
 
-export function buildDedupeKey(mailboxId: string, message: MailMessageSummary): string {
-  return message.internetMessageId?.trim() || `${mailboxId}:${message.messageId}`;
+export function buildDedupeKey(
+  mailboxId: string,
+  message: MailMessageSummary,
+): string {
+  return message.internetMessageId?.trim() ||
+    `${mailboxId}:${message.messageId}`;
 }
 
 export function formatFolderLabel(
@@ -29,12 +33,17 @@ export function monitoredFoldersText(bundle: MailboxBundle): string {
     for (const state of Object.values(bundle.syncState?.folderStates ?? {})) {
       if (state?.folderName) folderNames.add(state.folderName);
     }
-    return folderNames.size > 0 ? Array.from(folderNames).join(" + ") : "Inbox + Junk";
+    return folderNames.size > 0
+      ? Array.from(folderNames).join(" + ")
+      : "Inbox + Junk";
   }
   return "Inbox + Junk";
 }
 
-export function toPreviewText(input: string | undefined, maxChars: number): string {
+export function toPreviewText(
+  input: string | undefined,
+  maxChars: number,
+): string {
   const raw = (input ?? "")
     .replace(/\r/g, "")
     .split("\n")
@@ -53,14 +62,23 @@ function decodeHtmlEntities(input: string): string {
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, "\"")
+    .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)));
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)),
+    )
+    .replace(
+      /&#(\d+);/g,
+      (_, dec) => String.fromCodePoint(Number.parseInt(dec, 10)),
+    );
 }
 
 function readHtmlAttribute(tag: string, name: string): string | undefined {
-  const pattern = new RegExp(`${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+  const pattern = new RegExp(
+    `${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    "i",
+  );
   const matched = tag.match(pattern);
   const value = matched?.[1] ?? matched?.[2] ?? matched?.[3];
   return value ? decodeHtmlEntities(value) : undefined;
@@ -73,13 +91,19 @@ export function htmlToPlainText(input: string | undefined): string {
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<head[\s\S]*?<\/head>/gi, " ")
-      .replace(/<a\b[^>]*href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)[^>]*>([\s\S]*?)<\/a>/gi, (full, _href, text) => {
-        const href = readHtmlAttribute(full, "href");
-        const label = decodeHtmlEntities(String(text ?? "")).replace(/<[^>]+>/g, " ").trim();
-        if (!href) return label;
-        if (!label) return href;
-        return label === href ? href : `${label} (${href})`;
-      })
+      .replace(
+        /<a\b[^>]*href\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)[^>]*>([\s\S]*?)<\/a>/gi,
+        (full, _href, text) => {
+          const href = readHtmlAttribute(full, "href");
+          const label = decodeHtmlEntities(String(text ?? "")).replace(
+            /<[^>]+>/g,
+            " ",
+          ).trim();
+          if (!href) return label;
+          if (!label) return href;
+          return label === href ? href : `${label} (${href})`;
+        },
+      )
       .replace(/<img\b[^>]*>/gi, (tag) => {
         const src = readHtmlAttribute(tag, "src");
         const alt = readHtmlAttribute(tag, "alt");
@@ -111,20 +135,83 @@ export function notificationBodyText(message: MailMessageSummary): string {
     const inlineImageCount = (message.attachments ?? []).filter((attachment) =>
       attachment.isInline && attachment.contentType?.startsWith("image/")
     ).length;
-    return inlineImageCount > 0 ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。` : "";
+    return inlineImageCount > 0
+      ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。`
+      : "";
   }
-  const text = message.bodyContentType === "html" ? htmlToPlainText(body) : body;
+  const text = message.bodyContentType === "html"
+    ? htmlToPlainText(body)
+    : body;
   if (text.trim()) return text;
-  const inlineImageCount = (message.attachments ?? []).filter((attachment) =>
-    attachment.isInline && attachment.contentType?.startsWith("image/")
-  ).length;
-  return inlineImageCount > 0 ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。` : text;
+  const inlineImageCount =
+    (message.attachments ?? []).filter((attachment) =>
+      attachment.isInline && attachment.contentType?.startsWith("image/")
+    ).length;
+  return inlineImageCount > 0
+    ? `此邮件正文主要由图片组成，包含 ${inlineImageCount} 张内联图片。`
+    : text;
+}
+
+function flattenForCodeDetection(input: string | undefined): string {
+  return (input ?? "").replace(/\s+/g, " ").trim();
+}
+
+function normalizeCodeCandidate(input: string | undefined): string | null {
+  const normalized = (input ?? "").replace(/[\s-]+/g, "").trim().toUpperCase();
+  if (!normalized) return null;
+  if (!/^[A-Z0-9]{4,10}$/.test(normalized)) return null;
+  if (!/\d/.test(normalized)) return null;
+  return normalized;
+}
+
+/**
+ * 验证码提取策略：
+ * 1. 先看正文，再看主题，避免把主题里的品牌词误判成验证码；
+ * 2. 只接受纯数字或“包含数字的短码”，不再把纯字母单词当验证码；
+ * 3. 优先匹配关键词附近的代码，再回退到正文中的独立短码行。
+ */
+export function detectVerificationCode(input: {
+  subject?: string;
+  body?: string;
+}): string | null {
+  const keywordPattern =
+    /(?:验证码|校验码|动态码|动态密码|一次性密码|登录码|安全码|提取码|确认码|verification code|security code|one[-\s]?time (?:password|code)|login code|auth(?:entication)? code|otp|code is|password is|use code|your code is|enter this code|your login code)/iu;
+  const contextualPatterns = [
+    /(?:验证码|校验码|动态码|动态密码|一次性密码|登录码|安全码|提取码|确认码)\D{0,24}([A-Z0-9][A-Z0-9\s-]{2,14}[A-Z0-9]|\d{4,8})/iu,
+    /(?:verification code|security code|one[-\s]?time (?:password|code)|login code|auth(?:entication)? code|otp|code is|password is|use code|your code is|enter this code|your login code)\D{0,28}([A-Z0-9][A-Z0-9\s-]{2,14}[A-Z0-9]|\d{4,8})/iu,
+  ];
+
+  const inspect = (source: string | undefined): string | null => {
+    const raw = (source ?? "").replace(/\r/g, "").trim();
+    if (!raw) return null;
+
+    const flattened = flattenForCodeDetection(raw);
+    for (const pattern of contextualPatterns) {
+      const matched = flattened.match(pattern);
+      const code = normalizeCodeCandidate(matched?.[1]);
+      if (code) return code;
+    }
+
+    if (!keywordPattern.test(flattened)) return null;
+
+    for (const line of raw.split("\n")) {
+      const code = normalizeCodeCandidate(line);
+      if (code) return code;
+    }
+
+    const fallback = flattened.match(/\b(\d{4,8})\b/);
+    return fallback?.[1] ?? null;
+  };
+
+  return inspect(input.body) ?? inspect(input.subject);
 }
 
 function formatBytes(input: number | undefined): string | null {
   if (!Number.isFinite(input) || !input || input <= 0) return null;
   if (input < 1024) return `${input} B`;
-  if (input < 1024 * 1024) return `${(input / 1024).toFixed(1).replace(/\.0$/, "")} KB`;
+  if (input < 1024 * 1024) {
+    return `${(input / 1024).toFixed(1).replace(/\.0$/, "")} KB`;
+  }
   return `${(input / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
@@ -148,7 +235,9 @@ export function attachmentSummaryText(
   return `*附件* (${attachments.length})\n${lines.join("\n")}`;
 }
 
-function formatProvider(providerType: MailboxBundle["connection"]["providerType"]): string {
+function formatProvider(
+  providerType: MailboxBundle["connection"]["providerType"],
+): string {
   return providerType === "ms_oauth2api" ? "msOauth2api" : "graph_native";
 }
 
@@ -156,7 +245,13 @@ export function mailboxStatusLine(bundle: MailboxBundle): string {
   const route = bundle.route ? `<#${bundle.route.slackChannelId}>` : "未配置";
   const lastSync = bundle.syncState?.lastSyncAt ?? "never";
   const pollingOnly = bundle.connection.providerType === "ms_oauth2api";
-  const lease = pollingOnly ? "polling" : (bundle.lease?.expiresAt ?? "missing");
-  const subscription = pollingOnly ? "polling" : (bundle.lease?.status ?? "missing");
-  return `provider=${formatProvider(bundle.connection.providerType)} folders=${monitoredFoldersText(bundle)} route=${route} sync=${lastSync} sub=${subscription} lease=${lease}`;
+  const lease = pollingOnly
+    ? "polling"
+    : (bundle.lease?.expiresAt ?? "missing");
+  const subscription = pollingOnly
+    ? "polling"
+    : (bundle.lease?.status ?? "missing");
+  return `provider=${formatProvider(bundle.connection.providerType)} folders=${
+    monitoredFoldersText(bundle)
+  } route=${route} sync=${lastSync} sub=${subscription} lease=${lease}`;
 }
