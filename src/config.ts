@@ -1,11 +1,19 @@
 import type { MailProviderType } from "./mail/types.ts";
 
+export type PersistenceBackend = "deno_kv" | "dual_write" | "supabase";
+
 export interface AppConfig {
-  slackSigningSecret: string;
-  slackBotToken: string;
+  larkAppId: string;
+  larkAppSecret: string;
+  larkVerificationToken: string;
+  larkApiBaseUrl: string;
+  larkApiTimeoutMs: number;
+  larkAdminOpenIds: string[];
   appBaseUrl: string;
   kvPath: string | null;
-  slackApiTimeoutMs: number;
+  persistenceBackend: PersistenceBackend;
+  legacyDenoKvMigrationToken: string | null;
+  legacyDenoKvMigrationBatchSize: number;
   mailPreviewMaxChars: number;
   graphApiBaseUrl: string;
   microsoftClientId: string;
@@ -54,10 +62,25 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+function readCsvEnv(name: string): string[] {
+  return (readEnv(name) ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 function readMailProviderDefault(): MailProviderType {
-  const raw = (readEnv("MAIL_PROVIDER_DEFAULT") ?? "graph_native").trim().toLowerCase();
+  const raw = (readEnv("MAIL_PROVIDER_DEFAULT") ?? "graph_native").trim()
+    .toLowerCase();
   if (raw === "msoauth2api") return "ms_oauth2api";
   return "graph_native";
+}
+
+function readPersistenceBackend(): PersistenceBackend {
+  const raw = (readEnv("PERSISTENCE_BACKEND") ?? "deno_kv").trim()
+    .toLowerCase();
+  if (raw === "supabase" || raw === "dual_write") return raw;
+  return "deno_kv";
 }
 
 function readMsOauth2ApiMailboxes(): Array<"INBOX" | "Junk"> {
@@ -96,11 +119,25 @@ export async function getConfigAsync(): Promise<AppConfig> {
   const derivedWebhookState = await sha256Hex(tokenEncryptionKey);
 
   cachedConfig = {
-    slackSigningSecret: requireEnv("SLACK_SIGNING_SECRET"),
-    slackBotToken: requireEnv("SLACK_BOT_TOKEN"),
+    larkAppId: requireEnv("LARK_APP_ID"),
+    larkAppSecret: requireEnv("LARK_APP_SECRET"),
+    larkVerificationToken: requireEnv("LARK_VERIFICATION_TOKEN"),
+    larkApiBaseUrl: normalizeBaseUrl(
+      readEnv("LARK_API_BASE_URL") ?? "https://open.larksuite.com/open-apis",
+    ),
+    larkApiTimeoutMs: readIntEnv("LARK_API_TIMEOUT_MS", 15000),
+    larkAdminOpenIds: readCsvEnv("LARK_ADMIN_OPEN_IDS"),
     appBaseUrl: normalizeBaseUrl(requireEnv("APP_BASE_URL")),
     kvPath: readEnv("KV_PATH"),
-    slackApiTimeoutMs: readIntEnv("SLACK_API_TIMEOUT_MS", 15000),
+    persistenceBackend: readPersistenceBackend(),
+    legacyDenoKvMigrationToken: readEnv("LEGACY_DENO_KV_MIGRATION_TOKEN"),
+    legacyDenoKvMigrationBatchSize: Math.max(
+      1,
+      Math.min(
+        readIntEnv("LEGACY_DENO_KV_MIGRATION_BATCH_SIZE", 100),
+        500,
+      ),
+    ),
     mailPreviewMaxChars: readIntEnv("MAIL_PREVIEW_MAX_CHARS", 800),
     graphApiBaseUrl: normalizeBaseUrl(
       readEnv("GRAPH_API_BASE_URL") ?? "https://graph.microsoft.com/v1.0",
@@ -110,7 +147,8 @@ export async function getConfigAsync(): Promise<AppConfig> {
     microsoftRedirectUri: requireEnv("MICROSOFT_REDIRECT_URI"),
     microsoftAuthTenant: readEnv("MICROSOFT_AUTH_TENANT") ?? "common",
     tokenEncryptionKey,
-    webhookClientState: readEnv("GRAPH_WEBHOOK_CLIENT_STATE") ?? derivedWebhookState,
+    webhookClientState: readEnv("GRAPH_WEBHOOK_CLIENT_STATE") ??
+      derivedWebhookState,
     graphSubscriptionRenewalWindowMinutes: readIntEnv(
       "GRAPH_SUBSCRIPTION_RENEWAL_WINDOW_MINUTES",
       180,

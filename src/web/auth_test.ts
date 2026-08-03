@@ -7,11 +7,17 @@ import {
 } from "./auth.ts";
 
 const config: AppConfig = {
-  slackSigningSecret: "secret",
-  slackBotToken: "xoxb-test",
+  larkAppId: "cli_test",
+  larkAppSecret: "secret",
+  larkVerificationToken: "verification-token",
+  larkApiBaseUrl: "https://open.larksuite.com/open-apis",
+  larkApiTimeoutMs: 15000,
+  larkAdminOpenIds: [],
   appBaseUrl: "https://example.com",
   kvPath: null,
-  slackApiTimeoutMs: 15000,
+  persistenceBackend: "deno_kv",
+  legacyDenoKvMigrationToken: null,
+  legacyDenoKvMigrationBatchSize: 100,
   mailPreviewMaxChars: 800,
   graphApiBaseUrl: "https://graph.microsoft.com/v1.0",
   microsoftClientId: "client-id",

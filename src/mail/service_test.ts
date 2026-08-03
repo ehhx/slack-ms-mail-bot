@@ -8,21 +8,25 @@ import {
   saveMailboxBundle,
 } from "../store/mailbox.ts";
 import {
+  createConnectUrl,
   decodeWebMailPageCursor,
   encodeWebMailPageCursor,
-  createConnectUrl,
   processGraphNotifications,
   queueMailboxSyncByMailboxRef,
 } from "./service.ts";
 import type { MailboxBundle } from "./types.ts";
 
 function setEnv(): void {
-  Deno.env.set("SLACK_SIGNING_SECRET", "secret");
-  Deno.env.set("SLACK_BOT_TOKEN", "xoxb-test");
+  Deno.env.set("LARK_APP_ID", "cli_test");
+  Deno.env.set("LARK_APP_SECRET", "secret");
+  Deno.env.set("LARK_VERIFICATION_TOKEN", "verification-token");
   Deno.env.set("APP_BASE_URL", "https://example.com");
   Deno.env.set("MICROSOFT_CLIENT_ID", "client-id");
   Deno.env.set("MICROSOFT_CLIENT_SECRET", "client-secret");
-  Deno.env.set("MICROSOFT_REDIRECT_URI", "https://example.com/oauth/microsoft/callback");
+  Deno.env.set(
+    "MICROSOFT_REDIRECT_URI",
+    "https://example.com/oauth/microsoft/callback",
+  );
   Deno.env.set("TOKEN_ENCRYPTION_KEY", "super-secret");
 }
 
@@ -46,7 +50,8 @@ function sampleBundle(): MailboxBundle {
     },
     route: {
       mailboxId: "mailbox-1",
-      slackChannelId: "C1",
+      platform: "lark",
+      chatId: "oc_chat_1",
       updatedAt: new Date().toISOString(),
     },
     syncState: {
@@ -140,7 +145,11 @@ Deno.test("processGraphNotifications queues valid subscriptions", async () => {
   await saveMailboxBundle(kv, sampleBundle());
 
   const result = await processGraphNotifications([
-    { subscriptionId: "sub-1", clientState: "expected-client-state", changeType: "created" },
+    {
+      subscriptionId: "sub-1",
+      clientState: "expected-client-state",
+      changeType: "created",
+    },
     { subscriptionId: "sub-1", clientState: "wrong", changeType: "created" },
   ]);
 
@@ -149,7 +158,10 @@ Deno.test("processGraphNotifications queues valid subscriptions", async () => {
   const jobs = await listSyncJobs(kv);
   assertEquals(jobs.length, 1);
   const refreshed = await getMailboxBundle(kv, "mailbox-1");
-  assertEquals(Boolean(refreshed?.syncState?.folderStates?.junk?.deltaLink), true);
+  assertEquals(
+    Boolean(refreshed?.syncState?.folderStates?.junk?.deltaLink),
+    true,
+  );
 
   setKvForTesting(null);
   (kv as { close?: () => void }).close?.();
@@ -168,7 +180,11 @@ Deno.test("processGraphNotifications ignores non-graph provider mailboxes", asyn
   await saveMailboxBundle(kv, bundle);
 
   const result = await processGraphNotifications([
-    { subscriptionId: "sub-1", clientState: "expected-client-state", changeType: "created" },
+    {
+      subscriptionId: "sub-1",
+      clientState: "expected-client-state",
+      changeType: "created",
+    },
   ]);
 
   assertEquals(result.queued, 0);

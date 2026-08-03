@@ -96,7 +96,9 @@ async function fetchMsOauth2ApiMailboxMessages(input: {
   }
 
   const parsed = raw ? JSON.parse(raw) : [];
-  const records = Array.isArray(parsed) ? parsed as MsOauth2ApiMailRecord[] : [];
+  const records = Array.isArray(parsed)
+    ? parsed as MsOauth2ApiMailRecord[]
+    : [];
   const messages: MailMessageSummary[] = [];
   const folder = input.mailbox === "Junk"
     ? { kind: "junk" as const, name: "Junk" }
@@ -106,7 +108,9 @@ async function fetchMsOauth2ApiMailboxMessages(input: {
     messages.push(toMessageSummary(record, messageId, folder));
   }
 
-  messages.sort((a, b) => (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? ""));
+  messages.sort((a, b) =>
+    (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? "")
+  );
   return messages;
 }
 
@@ -126,5 +130,7 @@ export async function fetchMsOauth2ApiMessages(input: {
   );
   return chunks
     .flat()
-    .sort((a, b) => (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? ""));
+    .sort((a, b) =>
+      (a.receivedDateTime ?? "").localeCompare(b.receivedDateTime ?? "")
+    );
 }

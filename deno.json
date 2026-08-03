@@ -7,5 +7,9 @@
     "test": "deno test --unstable-kv --allow-env --allow-read --allow-write",
     "fmt": "deno fmt",
     "lint": "deno lint"
+  },
+  "deploy": {
+    "org": "tuguo571",
+    "app": "slack-ms-mail-bot"
   }
 }

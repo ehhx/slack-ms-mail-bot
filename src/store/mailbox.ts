@@ -13,6 +13,13 @@ import type {
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 const DELIVERED_RECORD_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
+interface LegacySlackMailboxRoute {
+  mailboxId: string;
+  slackChannelId: string;
+  slackChannelName?: string;
+  updatedAt: string;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -29,12 +36,57 @@ function emailKey(email: string): Deno.KvKey {
   return ["mailbox_email", normalizeEmail(email)];
 }
 
-function teamIndexKey(teamId: string, email: string, mailboxId: string): Deno.KvKey {
+function teamIndexKey(
+  teamId: string,
+  email: string,
+  mailboxId: string,
+): Deno.KvKey {
   return ["team_mailbox", teamId, normalizeEmail(email), mailboxId];
 }
 
 function routeKey(mailboxId: string): Deno.KvKey {
   return ["mailbox_route", mailboxId];
+}
+
+function normalizeMailboxRoute(value: unknown): MailboxRoute | null {
+  if (!value || typeof value !== "object") return null;
+  const route = value as Partial<MailboxRoute & LegacySlackMailboxRoute>;
+  if (
+    (route.platform === "lark" || route.platform === "slack") &&
+    typeof route.mailboxId === "string" &&
+    typeof route.chatId === "string"
+  ) {
+    return {
+      mailboxId: route.mailboxId,
+      platform: route.platform,
+      chatId: route.chatId,
+      chatName: typeof route.chatName === "string" ? route.chatName : undefined,
+      updatedAt: typeof route.updatedAt === "string"
+        ? route.updatedAt
+        : nowIso(),
+    };
+  }
+
+  // 旧 Slack 路由只在读取时归一化。用户通过 Lark 的 `mail claim` 或
+  // `mail route` 绑定目标群后，下一次保存会覆盖成新的跨平台路由结构。
+  if (
+    typeof route.mailboxId === "string" &&
+    typeof route.slackChannelId === "string"
+  ) {
+    return {
+      mailboxId: route.mailboxId,
+      platform: "slack",
+      chatId: route.slackChannelId,
+      chatName: typeof route.slackChannelName === "string"
+        ? route.slackChannelName
+        : undefined,
+      updatedAt: typeof route.updatedAt === "string"
+        ? route.updatedAt
+        : nowIso(),
+    };
+  }
+
+  return null;
 }
 
 function syncStateKey(mailboxId: string): Deno.KvKey {
@@ -70,9 +122,12 @@ export async function saveOAuthState(
   input: Omit<OAuthState, "createdAt" | "expiresAt"> & { expiresAt?: string },
 ): Promise<OAuthState> {
   const createdAt = nowIso();
-  const expiresAt = input.expiresAt ?? new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
+  const expiresAt = input.expiresAt ??
+    new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString();
   const value: OAuthState = { ...input, createdAt, expiresAt };
-  await kv.set(oauthStateKey(value.state), value, { expireIn: OAUTH_STATE_TTL_MS });
+  await kv.set(oauthStateKey(value.state), value, {
+    expireIn: OAUTH_STATE_TTL_MS,
+  });
   return value;
 }
 
@@ -84,7 +139,10 @@ export async function getOAuthState(
   return res.value ?? null;
 }
 
-export async function deleteOAuthState(kv: Deno.Kv, state: string): Promise<void> {
+export async function deleteOAuthState(
+  kv: Deno.Kv,
+  state: string,
+): Promise<void> {
   await kv.delete(oauthStateKey(state));
 }
 
@@ -105,22 +163,45 @@ export async function saveMailboxBundle(
       { mailboxId: bundle.connection.mailboxId },
     );
 
-  if (existing && normalizeEmail(existing.emailAddress) !== normalizeEmail(bundle.connection.emailAddress)) {
+  if (
+    existing &&
+    normalizeEmail(existing.emailAddress) !==
+      normalizeEmail(bundle.connection.emailAddress)
+  ) {
     atomic.delete(emailKey(existing.emailAddress));
-    atomic.delete(teamIndexKey(existing.teamId, existing.emailAddress, existing.mailboxId));
+  }
+  if (
+    existing &&
+    (normalizeEmail(existing.emailAddress) !==
+        normalizeEmail(bundle.connection.emailAddress) ||
+      existing.teamId !== bundle.connection.teamId)
+  ) {
+    atomic.delete(
+      teamIndexKey(existing.teamId, existing.emailAddress, existing.mailboxId),
+    );
   }
 
-  if (bundle.route) atomic.set(routeKey(bundle.connection.mailboxId), bundle.route);
-  if (bundle.syncState) atomic.set(syncStateKey(bundle.connection.mailboxId), bundle.syncState);
+  if (bundle.route) {
+    atomic.set(routeKey(bundle.connection.mailboxId), bundle.route);
+  }
+  if (bundle.syncState) {
+    atomic.set(syncStateKey(bundle.connection.mailboxId), bundle.syncState);
+  }
 
   const existingLease = await getMailboxLease(kv, bundle.connection.mailboxId);
-  if (existingLease?.subscriptionId && existingLease.subscriptionId !== bundle.lease?.subscriptionId) {
+  if (
+    existingLease?.subscriptionId &&
+    existingLease.subscriptionId !== bundle.lease?.subscriptionId
+  ) {
     atomic.delete(subscriptionKey(existingLease.subscriptionId));
   }
   if (bundle.lease) {
     atomic.set(leaseKey(bundle.connection.mailboxId), bundle.lease);
     if (bundle.lease.subscriptionId) {
-      atomic.set(subscriptionKey(bundle.lease.subscriptionId), bundle.connection.mailboxId);
+      atomic.set(
+        subscriptionKey(bundle.lease.subscriptionId),
+        bundle.connection.mailboxId,
+      );
     }
   }
 
@@ -140,8 +221,8 @@ export async function getMailboxRoute(
   kv: Deno.Kv,
   mailboxId: string,
 ): Promise<MailboxRoute | null> {
-  const res = await kv.get<MailboxRoute>(routeKey(mailboxId));
-  return res.value ?? null;
+  const res = await kv.get<unknown>(routeKey(mailboxId));
+  return normalizeMailboxRoute(res.value);
 }
 
 export async function getMailboxSyncState(
@@ -167,9 +248,9 @@ export async function getMailboxBundle(
   const [connection, route, syncState, lease] = await kv.getMany<
     [
       MailboxConnection,
-      MailboxRoute,
+      unknown,
       MailboxSyncState,
-      MailboxSubscriptionLease
+      MailboxSubscriptionLease,
     ]
   >([
     connectionKey(mailboxId),
@@ -181,7 +262,7 @@ export async function getMailboxBundle(
   if (!connection.value) return null;
   return {
     connection: connection.value as MailboxConnection,
-    route: (route.value as MailboxRoute | null) ?? null,
+    route: normalizeMailboxRoute(route.value),
     syncState: (syncState.value as MailboxSyncState | null) ?? null,
     lease: (lease.value as MailboxSubscriptionLease | null) ?? null,
   };
@@ -273,7 +354,9 @@ export async function saveMailboxLease(
 ): Promise<void> {
   const existing = await getMailboxLease(kv, lease.mailboxId);
   const atomic = kv.atomic().set(leaseKey(lease.mailboxId), lease);
-  if (existing?.subscriptionId && existing.subscriptionId !== lease.subscriptionId) {
+  if (
+    existing?.subscriptionId && existing.subscriptionId !== lease.subscriptionId
+  ) {
     atomic.delete(subscriptionKey(existing.subscriptionId));
   }
   if (lease.subscriptionId) {
@@ -288,7 +371,9 @@ export async function hasDeliveredRecord(
   mailboxId: string,
   dedupeKey: string,
 ): Promise<boolean> {
-  const res = await kv.get<DeliveredMailRecord>(deliveredKey(mailboxId, dedupeKey));
+  const res = await kv.get<DeliveredMailRecord>(
+    deliveredKey(mailboxId, dedupeKey),
+  );
   return Boolean(res.value);
 }
 
@@ -303,7 +388,10 @@ export async function saveDeliveredRecord(
 
 export async function enqueueSyncJob(
   kv: Deno.Kv,
-  input: Omit<SyncJob, "attemptCount" | "enqueuedAt"> & { attemptCount?: number; enqueuedAt?: string },
+  input: Omit<SyncJob, "attemptCount" | "enqueuedAt"> & {
+    attemptCount?: number;
+    enqueuedAt?: string;
+  },
 ): Promise<SyncJob> {
   const current = await kv.get<SyncJob>(syncQueueKey(input.mailboxId));
   const next: SyncJob = {
@@ -338,11 +426,17 @@ export async function listSyncJobs(kv: Deno.Kv): Promise<SyncJob[]> {
   return jobs;
 }
 
-export async function deleteSyncJob(kv: Deno.Kv, mailboxId: string): Promise<void> {
+export async function deleteSyncJob(
+  kv: Deno.Kv,
+  mailboxId: string,
+): Promise<void> {
   await kv.delete(syncQueueKey(mailboxId));
 }
 
-export async function deleteMailbox(kv: Deno.Kv, mailboxId: string): Promise<void> {
+export async function deleteMailbox(
+  kv: Deno.Kv,
+  mailboxId: string,
+): Promise<void> {
   const bundle = await getMailboxBundle(kv, mailboxId);
   if (!bundle) return;
 
@@ -352,7 +446,13 @@ export async function deleteMailbox(kv: Deno.Kv, mailboxId: string): Promise<voi
     .delete(syncStateKey(mailboxId))
     .delete(leaseKey(mailboxId))
     .delete(emailKey(bundle.connection.emailAddress))
-    .delete(teamIndexKey(bundle.connection.teamId, bundle.connection.emailAddress, mailboxId))
+    .delete(
+      teamIndexKey(
+        bundle.connection.teamId,
+        bundle.connection.emailAddress,
+        mailboxId,
+      ),
+    )
     .delete(syncQueueKey(mailboxId));
 
   if (bundle.lease?.subscriptionId) {

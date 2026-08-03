@@ -3,11 +3,17 @@ import type { AppConfig } from "../config.ts";
 import { fetchMsOauth2ApiMessages, MsOauth2ApiError } from "./msoauth2api.ts";
 
 const config: AppConfig = {
-  slackSigningSecret: "secret",
-  slackBotToken: "xoxb-test",
+  larkAppId: "cli_test",
+  larkAppSecret: "secret",
+  larkVerificationToken: "verification-token",
+  larkApiBaseUrl: "https://open.larksuite.com/open-apis",
+  larkApiTimeoutMs: 15000,
+  larkAdminOpenIds: [],
   appBaseUrl: "https://example.com",
   kvPath: null,
-  slackApiTimeoutMs: 15000,
+  persistenceBackend: "deno_kv",
+  legacyDenoKvMigrationToken: null,
+  legacyDenoKvMigrationBatchSize: 100,
   mailPreviewMaxChars: 220,
   graphApiBaseUrl: "https://graph.microsoft.com/v1.0",
   microsoftClientId: "client-id",
@@ -32,21 +38,23 @@ Deno.test("fetchMsOauth2ApiMessages maps response and sorts by received time", a
     config,
     refreshToken: "refresh-token",
     emailAddress: "mailbox@example.com",
-    fetchImpl: async () =>
-      new Response(JSON.stringify([
-        {
-          send: "later@example.com",
-          subject: "Later",
-          text: "later body",
-          date: "2026-03-25T02:00:00.000Z",
-        },
-        {
-          send: "earlier@example.com",
-          subject: "Earlier",
-          text: "earlier body",
-          date: "2026-03-25T01:00:00.000Z",
-        },
-      ])),
+    fetchImpl: () =>
+      Promise.resolve(
+        new Response(JSON.stringify([
+          {
+            send: "later@example.com",
+            subject: "Later",
+            text: "later body",
+            date: "2026-03-25T02:00:00.000Z",
+          },
+          {
+            send: "earlier@example.com",
+            subject: "Earlier",
+            text: "earlier body",
+            date: "2026-03-25T01:00:00.000Z",
+          },
+        ])),
+      ),
   });
 
   assertEquals(messages.length, 2);
@@ -65,7 +73,8 @@ Deno.test("fetchMsOauth2ApiMessages throws typed error on http failure", async (
         config,
         refreshToken: "refresh-token",
         emailAddress: "mailbox@example.com",
-        fetchImpl: async () => new Response("forbidden", { status: 403 }),
+        fetchImpl: () =>
+          Promise.resolve(new Response("forbidden", { status: 403 })),
       }),
     MsOauth2ApiError,
     "HTTP 403",

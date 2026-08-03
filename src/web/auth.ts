@@ -16,10 +16,16 @@ function base64UrlEncode(bytes: Uint8Array): string {
   for (const value of bytes) {
     binary += String.fromCharCode(value);
   }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(
+    /=+$/g,
+    "",
+  );
 }
 
-async function signSessionPayload(payload: string, secret: string): Promise<string> {
+async function signSessionPayload(
+  payload: string,
+  secret: string,
+): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     textBuffer(secret),
@@ -63,22 +69,28 @@ function buildCookie(
   maxAgeSeconds: number,
   secure: boolean,
 ): string {
-  return `${WEB_SESSION_COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? "; Secure" : ""}`;
+  return `${WEB_SESSION_COOKIE_NAME}=${
+    encodeURIComponent(value)
+  }; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${
+    secure ? "; Secure" : ""
+  }`;
 }
 
 export function isWebConsoleEnabled(config: AppConfig): boolean {
   return Boolean(config.webAdminPassword);
 }
 
-export async function verifyWebAdminPassword(
+export function verifyWebAdminPassword(
   password: string,
   config: AppConfig,
-): Promise<boolean> {
+): boolean {
   if (!config.webAdminPassword) return false;
   return timingSafeEqual(password, config.webAdminPassword);
 }
 
-export async function buildWebAdminSessionCookie(config: AppConfig): Promise<string> {
+export async function buildWebAdminSessionCookie(
+  config: AppConfig,
+): Promise<string> {
   const expiresAt = Date.now() + WEB_SESSION_TTL_MS;
   const payload = `${WEB_SESSION_COOKIE_NAME}:${expiresAt}`;
   const signature = await signSessionPayload(payload, config.webSessionSecret);

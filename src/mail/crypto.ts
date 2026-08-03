@@ -23,7 +23,10 @@ async function deriveKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-export async function encryptSecret(plainText: string, secret: string): Promise<string> {
+export async function encryptSecret(
+  plainText: string,
+  secret: string,
+): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const key = await deriveKey(secret);
   const cipher = await crypto.subtle.encrypt(
@@ -37,7 +40,10 @@ export async function encryptSecret(plainText: string, secret: string): Promise<
   return toBase64(payload);
 }
 
-export async function decryptSecret(cipherText: string, secret: string): Promise<string> {
+export async function decryptSecret(
+  cipherText: string,
+  secret: string,
+): Promise<string> {
   const payload = fromBase64(cipherText);
   if (payload.byteLength < 13) throw new Error("Encrypted payload too short");
   const iv = payload.slice(0, 12);

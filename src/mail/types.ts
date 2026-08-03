@@ -1,7 +1,11 @@
-export type MailboxConnectionStatus = "active" | "needs_reauth" | "disconnected";
+export type MailboxConnectionStatus =
+  | "active"
+  | "needs_reauth"
+  | "disconnected";
 export type LeaseStatus = "active" | "missing" | "degraded";
 export type MailProviderType = "graph_native" | "ms_oauth2api";
 export type MailFolderKind = "inbox" | "junk";
+export type NotificationPlatform = "lark" | "slack";
 
 export interface MailboxFolderSyncState {
   folderId: string;
@@ -49,8 +53,9 @@ export interface MailboxConnection {
 
 export interface MailboxRoute {
   mailboxId: string;
-  slackChannelId: string;
-  slackChannelName?: string;
+  platform: NotificationPlatform;
+  chatId: string;
+  chatName?: string;
   updatedAt: string;
 }
 
@@ -82,7 +87,7 @@ export interface DeliveredMailRecord {
   messageId: string;
   internetMessageId?: string;
   subject: string;
-  slackChannelId: string;
+  deliveryChatId: string;
   deliveredAt: string;
 }
 

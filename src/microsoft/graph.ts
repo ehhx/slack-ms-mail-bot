@@ -1,8 +1,8 @@
 import type { AppConfig } from "../config.ts";
 import type {
   MailAttachmentSummary,
-  MailInlineImage,
   MailFolderKind,
+  MailInlineImage,
   MailMessageSummary,
 } from "../mail/types.ts";
 
@@ -116,7 +116,7 @@ export class MicrosoftGraphClient {
   async getMailFolder(folderName: string): Promise<MicrosoftGraphMailFolder> {
     return await this.request<MicrosoftGraphMailFolder>(
       // mailFolder 资源在 v1.0 下不支持选择 wellKnownName；
-      // 这里只需要拿到 folder id 和 displayName，用于后续 delta query 与 Slack 展示。
+      // 这里只需要拿到 folder id 和 displayName，用于后续 delta query 与 Lark 展示。
       `/me/mailFolders/${encodePathSegment(folderName)}?$select=id,displayName`,
     );
   }
@@ -129,11 +129,17 @@ export class MicrosoftGraphClient {
     return await this.getMailFolder("junkemail");
   }
 
-  async getMessageDetail(messageId: string): Promise<Partial<MailMessageSummary>> {
+  async getMessageDetail(
+    messageId: string,
+  ): Promise<Partial<MailMessageSummary>> {
     const message = await this.request<Record<string, unknown>>(
-      `/me/messages/${encodePathSegment(messageId)}?$select=id,subject,body,uniqueBody,receivedDateTime,webLink,internetMessageId,from,hasAttachments`,
+      `/me/messages/${
+        encodePathSegment(messageId)
+      }?$select=id,subject,body,uniqueBody,receivedDateTime,webLink,internetMessageId,from,hasAttachments`,
     );
-    const from = message.from as { emailAddress?: { name?: string; address?: string } } | undefined;
+    const from = message.from as {
+      emailAddress?: { name?: string; address?: string };
+    } | undefined;
     const body = (message.uniqueBody as GraphItemBody | undefined) ??
       (message.body as GraphItemBody | undefined);
     const hasAttachments = Boolean(message.hasAttachments);
@@ -151,7 +157,9 @@ export class MicrosoftGraphClient {
       fromAddress: from?.emailAddress?.address,
       bodyText: body?.content ? String(body.content) : undefined,
       bodyContentType: body?.contentType === "html" ? "html" : "text",
-      receivedDateTime: message.receivedDateTime ? String(message.receivedDateTime) : undefined,
+      receivedDateTime: message.receivedDateTime
+        ? String(message.receivedDateTime)
+        : undefined,
       webLink: message.webLink ? String(message.webLink) : undefined,
       hasAttachments,
       attachments,
@@ -162,15 +170,21 @@ export class MicrosoftGraphClient {
     item: Record<string, unknown>,
     input: { folderKind?: MailFolderKind; folderName?: string },
   ): MailMessageSummary {
-    const from = item.from as { emailAddress?: { name?: string; address?: string } } | undefined;
+    const from = item.from as {
+      emailAddress?: { name?: string; address?: string };
+    } | undefined;
     return {
       messageId: String(item.id ?? ""),
-      internetMessageId: item.internetMessageId ? String(item.internetMessageId) : undefined,
+      internetMessageId: item.internetMessageId
+        ? String(item.internetMessageId)
+        : undefined,
       subject: item.subject ? String(item.subject) : "(no subject)",
       fromName: from?.emailAddress?.name,
       fromAddress: from?.emailAddress?.address,
       bodyPreview: item.bodyPreview ? String(item.bodyPreview) : undefined,
-      receivedDateTime: item.receivedDateTime ? String(item.receivedDateTime) : undefined,
+      receivedDateTime: item.receivedDateTime
+        ? String(item.receivedDateTime)
+        : undefined,
       webLink: item.webLink ? String(item.webLink) : undefined,
       hasAttachments: Boolean(item.hasAttachments),
       folderKind: input.folderKind,
@@ -186,34 +200,46 @@ export class MicrosoftGraphClient {
     pageUrl?: string;
   }): Promise<{ messages: MailMessageSummary[]; nextPageUrl?: string }> {
     const top = Math.max(1, Math.min(input.top ?? 25, 100));
-    const withOrderBy =
-      `${this.config.graphApiBaseUrl}/me/mailFolders/${encodePathSegment(input.folderId)}/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$orderby=receivedDateTime%20desc&$top=${top}`;
-    const fallbackUrl =
-      `${this.config.graphApiBaseUrl}/me/mailFolders/${encodePathSegment(input.folderId)}/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$top=${top}`;
+    const withOrderBy = `${this.config.graphApiBaseUrl}/me/mailFolders/${
+      encodePathSegment(input.folderId)
+    }/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$orderby=receivedDateTime%20desc&$top=${top}`;
+    const fallbackUrl = `${this.config.graphApiBaseUrl}/me/mailFolders/${
+      encodePathSegment(input.folderId)
+    }/messages?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from,hasAttachments&$top=${top}`;
     const requestUrl = input.pageUrl ?? withOrderBy;
 
     try {
       const page = await this.request<GraphCollectionPage>(requestUrl);
       return {
-        messages: (page.value ?? []).map((item) => this.mapMessageRecord(item, input)),
+        messages: (page.value ?? []).map((item) =>
+          this.mapMessageRecord(item, input)
+        ),
         nextPageUrl: page["@odata.nextLink"] || undefined,
       };
     } catch (error) {
-      if (input.pageUrl || !(error instanceof GraphApiError) || error.status !== 400) {
+      if (
+        input.pageUrl || !(error instanceof GraphApiError) ||
+        error.status !== 400
+      ) {
         throw error;
       }
       const page = await this.request<GraphCollectionPage>(fallbackUrl);
       return {
-        messages: (page.value ?? []).map((item) => this.mapMessageRecord(item, input)),
+        messages: (page.value ?? []).map((item) =>
+          this.mapMessageRecord(item, input)
+        ),
         nextPageUrl: page["@odata.nextLink"] || undefined,
       };
     }
   }
 
-  async listMessageAttachments(messageId: string): Promise<MailAttachmentSummary[]> {
+  async listMessageAttachments(
+    messageId: string,
+  ): Promise<MailAttachmentSummary[]> {
     const attachments: MailAttachmentSummary[] = [];
-    let nextUrl =
-      `${this.config.graphApiBaseUrl}/me/messages/${encodePathSegment(messageId)}/attachments?$select=id,name,contentType,size,isInline,contentId`;
+    let nextUrl = `${this.config.graphApiBaseUrl}/me/messages/${
+      encodePathSegment(messageId)
+    }/attachments?$select=id,name,contentType,size,isInline,contentId`;
 
     while (nextUrl) {
       const page = await this.request<{
@@ -244,7 +270,9 @@ export class MicrosoftGraphClient {
     attachmentId: string,
   ): Promise<MailInlineImage | null> {
     const attachment = await this.request<GraphAttachmentRecord>(
-      `/me/messages/${encodePathSegment(messageId)}/attachments/${encodePathSegment(attachmentId)}?$select=id,name,contentType,size,isInline,contentId,contentBytes`,
+      `/me/messages/${encodePathSegment(messageId)}/attachments/${
+        encodePathSegment(attachmentId)
+      }?$select=id,name,contentType,size,isInline,contentId,contentBytes`,
     );
     if (
       attachment["@odata.type"] &&
@@ -252,7 +280,9 @@ export class MicrosoftGraphClient {
     ) {
       return null;
     }
-    if (!attachment.contentBytes || !attachment.contentType?.startsWith("image/")) {
+    if (
+      !attachment.contentBytes || !attachment.contentType?.startsWith("image/")
+    ) {
       return null;
     }
     return {
@@ -260,7 +290,9 @@ export class MicrosoftGraphClient {
       name: attachment.name ? String(attachment.name) : "inline-image",
       contentType: String(attachment.contentType),
       size: typeof attachment.size === "number" ? attachment.size : undefined,
-      contentId: attachment.contentId ? String(attachment.contentId) : undefined,
+      contentId: attachment.contentId
+        ? String(attachment.contentId)
+        : undefined,
       dataBase64: String(attachment.contentBytes),
     };
   }
@@ -313,7 +345,10 @@ export class MicrosoftGraphClient {
     deltaLink?: string;
   }): Promise<{ messages: MailMessageSummary[]; deltaLink: string }> {
     const messages: MailMessageSummary[] = [];
-    let nextUrl = input.deltaLink ?? `${this.config.graphApiBaseUrl}/me/mailFolders/${encodePathSegment(input.folderId)}/messages/delta?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from&changeType=created`;
+    let nextUrl = input.deltaLink ??
+      `${this.config.graphApiBaseUrl}/me/mailFolders/${
+        encodePathSegment(input.folderId)
+      }/messages/delta?$select=id,subject,bodyPreview,receivedDateTime,webLink,internetMessageId,from&changeType=created`;
     let latestDeltaLink: string | null = input.deltaLink ?? null;
 
     while (nextUrl) {

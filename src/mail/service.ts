@@ -1,4 +1,4 @@
-import { getConfigAsync, type AppConfig } from "../config.ts";
+import { type AppConfig, getConfigAsync } from "../config.ts";
 import {
   buildMailboxMessagesResource,
   GraphApiError,
@@ -7,14 +7,17 @@ import {
 import {
   buildMicrosoftAuthorizeUrl,
   exchangeAuthorizationCode,
-  refreshAccessToken,
   type MicrosoftTokenSet,
+  refreshAccessToken,
 } from "../microsoft/oauth.ts";
 import type { GraphWebhookNotification } from "../microsoft/webhook.ts";
-import { fetchMsOauth2ApiMessages, MsOauth2ApiError } from "../providers/msoauth2api.ts";
-import { postChannelMessage, SlackApiError, uploadInlineImageToSlack } from "../slack/api.ts";
-import { buildMailNotificationBlocks } from "../slack/ui.ts";
-import { getKv } from "../store/kv.ts";
+import {
+  fetchMsOauth2ApiMessages,
+  MsOauth2ApiError,
+} from "../providers/msoauth2api.ts";
+import { postLarkCard } from "../lark/api.ts";
+import { buildLarkMailNotificationCard } from "../lark/ui.ts";
+import { getKv, pruneExpiredState } from "../store/kv.ts";
 import {
   deleteMailbox,
   deleteOAuthState,
@@ -24,6 +27,7 @@ import {
   getMailboxBundle,
   getMailboxIdBySubscription,
   getOAuthState,
+  hasDeliveredRecord,
   listAllMailboxBundles,
   listMailboxBundles,
   listSyncJobs,
@@ -34,19 +38,18 @@ import {
   saveMailboxRoute,
   saveMailboxSyncState,
   saveOAuthState,
-  hasDeliveredRecord,
 } from "../store/mailbox.ts";
 import { decryptSecret, encryptSecret } from "./crypto.ts";
 import { buildDedupeKey, formatFolderLabel, toPreviewText } from "./message.ts";
 import type {
-  MailFolderKind,
   MailboxBundle,
   MailboxConnection,
   MailboxFolderSyncState,
-  MailInlineImage,
   MailboxRoute,
   MailboxSubscriptionLease,
   MailboxSyncState,
+  MailFolderKind,
+  MailInlineImage,
   MailMessageSummary,
   MailProviderType,
 } from "./types.ts";
@@ -55,11 +58,84 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-const MAX_INLINE_IMAGE_UPLOADS = 3;
 const MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024;
 const WEB_MESSAGE_LIST_LIMIT = 25;
 const WEB_INLINE_IMAGE_LIMIT = 4;
 const WEB_PAGE_CURSOR_PREFIX = "graph-page:";
+const GRAPH_ACCESS_TOKEN_MARGIN_MS = 2 * 60 * 1000;
+const WEB_LIST_CACHE_TTL_MS = 20 * 1000;
+const WEB_DETAIL_CACHE_TTL_MS = 5 * 60 * 1000;
+const WEB_LIST_CACHE_MAX = 24;
+const WEB_DETAIL_CACHE_MAX = 40;
+
+interface CachedGraphSession {
+  accessToken: string;
+  tokenSet: MicrosoftTokenSet;
+  encryptedRefreshToken: string;
+  connectionUpdatedAt: string;
+  expiresAtMs: number;
+}
+
+interface TimedCacheValue<T> {
+  value: T;
+  expiresAtMs: number;
+}
+
+type WebListResult = {
+  bundle: MailboxBundle;
+  folder: { kind: MailFolderKind; folderId: string; folderName: string };
+  messages: MailMessageSummary[];
+  nextPageCursor?: string;
+};
+
+type WebDetailResult = {
+  bundle: MailboxBundle;
+  folderKind: MailFolderKind;
+  message: MailMessageSummary;
+};
+
+const graphSessionCache = new Map<string, CachedGraphSession>();
+const graphSessionRequests = new Map<string, Promise<CachedGraphSession>>();
+const webListCache = new Map<string, TimedCacheValue<WebListResult>>();
+const webDetailCache = new Map<string, TimedCacheValue<WebDetailResult>>();
+
+function readTimedCache<T>(
+  cache: Map<string, TimedCacheValue<T>>,
+  key: string,
+): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function writeTimedCache<T>(
+  cache: Map<string, TimedCacheValue<T>>,
+  key: string,
+  value: T,
+  ttlMs: number,
+  maxSize: number,
+): void {
+  cache.delete(key);
+  cache.set(key, { value, expiresAtMs: Date.now() + ttlMs });
+  while (cache.size > maxSize) {
+    const oldestKey = cache.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    cache.delete(oldestKey);
+  }
+}
+
+export function clearWebMailRuntimeCaches(): void {
+  graphSessionCache.clear();
+  graphSessionRequests.clear();
+  webListCache.clear();
+  webDetailCache.clear();
+}
 
 function isExpired(iso: string | undefined, marginMs = 0): boolean {
   if (!iso) return true;
@@ -68,7 +144,10 @@ function isExpired(iso: string | undefined, marginMs = 0): boolean {
   return date.getTime() <= Date.now() + marginMs;
 }
 
-function compareIso(left: string | undefined, right: string | undefined): number | null {
+function compareIso(
+  left: string | undefined,
+  right: string | undefined,
+): number | null {
   if (!left || !right) return null;
   const leftMs = Date.parse(left);
   const rightMs = Date.parse(right);
@@ -122,7 +201,10 @@ interface GraphFolderDeltaResult extends ResolvedMailboxFolder {
   messages: MailMessageSummary[];
 }
 
-function getFolderId(connection: MailboxConnection, kind: MailFolderKind): string | undefined {
+function getFolderId(
+  connection: MailboxConnection,
+  kind: MailFolderKind,
+): string | undefined {
   return kind === "junk" ? connection.junkFolderId : connection.inboxFolderId;
 }
 
@@ -141,9 +223,11 @@ function cloneFolderStates(
 ): MailboxSyncState["folderStates"] {
   if (!folderStates) return undefined;
   const next: Partial<Record<MailFolderKind, MailboxFolderSyncState>> = {};
-  for (const [key, value] of Object.entries(folderStates) as Array<
-    [MailFolderKind, MailboxFolderSyncState | undefined]
-  >) {
+  for (
+    const [key, value] of Object.entries(folderStates) as Array<
+      [MailFolderKind, MailboxFolderSyncState | undefined]
+    >
+  ) {
     if (!value) continue;
     next[key] = { ...value };
   }
@@ -199,7 +283,9 @@ function buildFolderStates(
 }
 
 function latestFolderStateDate(
-  folderStates: Partial<Record<MailFolderKind, MailboxFolderSyncState>> | undefined,
+  folderStates:
+    | Partial<Record<MailFolderKind, MailboxFolderSyncState>>
+    | undefined,
   fallback?: string,
 ): string | undefined {
   let latest = fallback;
@@ -238,7 +324,9 @@ function buildGraphSyncState(
 async function resolveGraphFolders(
   graph: MicrosoftGraphClient,
   connection: MailboxConnection,
-): Promise<{ connection: MailboxConnection; folders: ResolvedMailboxFolder[] }> {
+): Promise<
+  { connection: MailboxConnection; folders: ResolvedMailboxFolder[] }
+> {
   let nextConnection = connection;
   const folders: ResolvedMailboxFolder[] = [];
 
@@ -305,7 +393,10 @@ function buildMissingLease(
 
 function subscriptionExpiry(config: AppConfig): string {
   // Outlook message subscriptions 当前仍受约 3 天上限约束，因此这里继续限制在 4230 分钟内。
-  const maxMinutes = Math.max(1, Math.min(config.graphSubscriptionMaxMinutes, 4230));
+  const maxMinutes = Math.max(
+    1,
+    Math.min(config.graphSubscriptionMaxMinutes, 4230),
+  );
   return new Date(Date.now() + maxMinutes * 60 * 1000).toISOString();
 }
 
@@ -322,7 +413,10 @@ async function issueAccessToken(
   const nextRefresh = tokenSet.refreshToken ?? refreshToken;
   return {
     tokenSet,
-    encryptedRefreshToken: await encryptSecret(nextRefresh, config.tokenEncryptionKey),
+    encryptedRefreshToken: await encryptSecret(
+      nextRefresh,
+      config.tokenEncryptionKey,
+    ),
   };
 }
 
@@ -339,24 +433,69 @@ async function ensureGraphContext(
   tokenSet: MicrosoftTokenSet;
   connection: MailboxConnection;
 }> {
-  const { tokenSet, encryptedRefreshToken } = await issueAccessToken(
-    config,
-    bundle.connection,
-    fetchImpl,
-  );
+  let session: CachedGraphSession | null = null;
+
+  // 自定义 fetch 通常来自测试；避免测试间共享运行时 token，也让 mock 调用保持可预测。
+  if (fetchImpl === fetch) {
+    const cached = graphSessionCache.get(bundle.connection.mailboxId);
+    if (
+      cached && cached.expiresAtMs > Date.now() + GRAPH_ACCESS_TOKEN_MARGIN_MS
+    ) {
+      session = cached;
+    } else {
+      let pending = graphSessionRequests.get(bundle.connection.mailboxId);
+      if (!pending) {
+        pending = (async () => {
+          const { tokenSet, encryptedRefreshToken } = await issueAccessToken(
+            config,
+            bundle.connection,
+            fetchImpl,
+          );
+          const created: CachedGraphSession = {
+            accessToken: tokenSet.accessToken,
+            tokenSet,
+            encryptedRefreshToken,
+            connectionUpdatedAt: nowIso(),
+            expiresAtMs: Date.parse(tokenSet.expiresAt),
+          };
+          graphSessionCache.set(bundle.connection.mailboxId, created);
+          return created;
+        })().finally(() => {
+          graphSessionRequests.delete(bundle.connection.mailboxId);
+        });
+        graphSessionRequests.set(bundle.connection.mailboxId, pending);
+      }
+      session = await pending;
+    }
+  }
+
+  if (!session) {
+    const { tokenSet, encryptedRefreshToken } = await issueAccessToken(
+      config,
+      bundle.connection,
+      fetchImpl,
+    );
+    session = {
+      accessToken: tokenSet.accessToken,
+      tokenSet,
+      encryptedRefreshToken,
+      connectionUpdatedAt: nowIso(),
+      expiresAtMs: Date.parse(tokenSet.expiresAt),
+    };
+  }
 
   const connection: MailboxConnection = {
     ...bundle.connection,
-    encryptedRefreshToken,
-    accessTokenExpiresAt: tokenSet.expiresAt,
-    updatedAt: nowIso(),
+    encryptedRefreshToken: session.encryptedRefreshToken,
+    accessTokenExpiresAt: session.tokenSet.expiresAt,
+    updatedAt: session.connectionUpdatedAt,
     status: "active",
     lastError: undefined,
   };
 
   return {
-    graph: new MicrosoftGraphClient(config, tokenSet.accessToken, fetchImpl),
-    tokenSet,
+    graph: new MicrosoftGraphClient(config, session.accessToken, fetchImpl),
+    tokenSet: session.tokenSet,
     connection,
   };
 }
@@ -420,7 +559,7 @@ async function seedDeliveredMessages(
       messageId: message.messageId,
       internetMessageId: message.internetMessageId,
       subject: message.subject,
-      slackChannelId: input.route?.slackChannelId ?? "",
+      deliveryChatId: input.route?.chatId ?? "",
       deliveredAt: nowIso(),
     });
   }
@@ -448,7 +587,7 @@ async function buildMsOauth2ApiBaselineState(
   });
 
   // msOauth2api 只有全量拉取接口。这里在建立/切换 provider 时先把当前可见消息做基线入库，
-  // 防止后续第一次轮询把历史邮件整批推到 Slack。
+  // 防止后续第一次轮询把历史邮件整批推到 Lark。
   await seedDeliveredMessages(kv, {
     connection: input.connection,
     route: input.route,
@@ -544,7 +683,11 @@ export async function completeOAuthCallback(
     throw new Error("Microsoft OAuth response did not include a refresh token");
   }
 
-  const graph = new MicrosoftGraphClient(config, tokenSet.accessToken, fetchImpl);
+  const graph = new MicrosoftGraphClient(
+    config,
+    tokenSet.accessToken,
+    fetchImpl,
+  );
   const user = await graph.getCurrentUser();
   const emailAddress = user.mail || user.userPrincipalName;
   if (!emailAddress) {
@@ -552,7 +695,9 @@ export async function completeOAuthCallback(
   }
 
   const existingId = await findMailboxIdByEmail(kv, emailAddress);
-  const existingBundle = existingId ? await getMailboxBundle(kv, existingId) : null;
+  const existingBundle = existingId
+    ? await getMailboxBundle(kv, existingId)
+    : null;
   const mailboxId = existingBundle?.connection.mailboxId ?? crypto.randomUUID();
   const encryptedRefreshToken = await encryptSecret(
     tokenSet.refreshToken,
@@ -578,12 +723,16 @@ export async function completeOAuthCallback(
     status: "active",
     lastError: undefined,
   };
-  const { connection: resolvedConnection, folders } = await resolveGraphFolders(graph, connection);
+  const { connection: resolvedConnection, folders } = await resolveGraphFolders(
+    graph,
+    connection,
+  );
 
   const route: MailboxRoute = {
     mailboxId,
-    slackChannelId: oauthState.channelId,
-    slackChannelName: oauthState.channelName,
+    platform: "lark",
+    chatId: oauthState.channelId,
+    chatName: oauthState.channelName,
     updatedAt: nowIso(),
   };
 
@@ -592,8 +741,16 @@ export async function completeOAuthCallback(
 
   if (providerType === "graph_native") {
     const baselines = await collectGraphFolderDeltas(graph, folders, null);
-    syncState = buildGraphSyncState(mailboxId, existingBundle?.syncState, baselines);
-    lease = await createSubscriptionForMailbox(graph, config, resolvedConnection);
+    syncState = buildGraphSyncState(
+      mailboxId,
+      existingBundle?.syncState,
+      baselines,
+    );
+    lease = await createSubscriptionForMailbox(
+      graph,
+      config,
+      resolvedConnection,
+    );
   } else {
     syncState = await buildMsOauth2ApiBaselineState(kv, {
       config,
@@ -605,7 +762,12 @@ export async function completeOAuthCallback(
     lease = buildMissingLease(resolvedConnection, config);
   }
 
-  const bundle: MailboxBundle = { connection: resolvedConnection, route, syncState, lease };
+  const bundle: MailboxBundle = {
+    connection: resolvedConnection,
+    route,
+    syncState,
+    lease,
+  };
   await saveMailboxBundle(kv, bundle);
   await deleteOAuthState(kv, state);
   return bundle;
@@ -616,7 +778,58 @@ export async function listMailboxes(teamId: string): Promise<MailboxBundle[]> {
   return await listMailboxBundles(kv, teamId);
 }
 
-function resolveFolderKind(input: MailFolderKind | string | undefined): MailFolderKind {
+/**
+ * 将旧 Slack 工作区的既有 Outlook 连接认领到当前 Lark 租户和群聊。
+ * OAuth refresh token、Graph subscription 和同步游标都会保留，因此无需重复授权。
+ */
+export async function claimMailboxForLark(input: {
+  teamId: string;
+  userId: string;
+  chatId: string;
+  chatName?: string;
+  mailbox: string;
+}): Promise<MailboxBundle> {
+  const kv = await getKv();
+  const directId = await findMailboxIdByEmail(kv, input.mailbox);
+  const directBundle = directId ? await getMailboxBundle(kv, directId) : null;
+  const bundle = directBundle ??
+    (await listAllMailboxBundles(kv)).find((item) =>
+      item.connection.mailboxId.startsWith(input.mailbox.trim()) ||
+      item.connection.emailAddress.toLowerCase() ===
+        input.mailbox.trim().toLowerCase()
+    ) ?? null;
+  if (!bundle) throw new Error("Mailbox not found");
+
+  if (
+    bundle.route?.platform === "lark" &&
+    bundle.connection.teamId !== input.teamId
+  ) {
+    throw new Error("Mailbox is already claimed by another Lark tenant");
+  }
+
+  const next: MailboxBundle = {
+    ...bundle,
+    connection: {
+      ...bundle.connection,
+      teamId: input.teamId,
+      authorizedByUserId: input.userId,
+      updatedAt: nowIso(),
+    },
+    route: {
+      mailboxId: bundle.connection.mailboxId,
+      platform: "lark",
+      chatId: input.chatId,
+      chatName: input.chatName,
+      updatedAt: nowIso(),
+    },
+  };
+  await saveMailboxBundle(kv, next);
+  return next;
+}
+
+function resolveFolderKind(
+  input: MailFolderKind | string | undefined,
+): MailFolderKind {
   return input === "junk" ? "junk" : "inbox";
 }
 
@@ -630,7 +843,10 @@ function encodeOpaqueCursor(input: string): string {
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(
+    /=+$/g,
+    "",
+  );
 }
 
 function decodeOpaqueCursor(input: string): string | null {
@@ -646,10 +862,15 @@ function decodeOpaqueCursor(input: string): string | null {
   }
 }
 
-function buildGraphFolderMessagesPath(config: AppConfig, folderId: string): string {
+function buildGraphFolderMessagesPath(
+  config: AppConfig,
+  folderId: string,
+): string {
   const graphBase = new URL(config.graphApiBaseUrl);
   const basePath = graphBase.pathname.replace(/\/+$/, "");
-  return `${basePath}/me/mailFolders/${encodeGraphPathSegment(folderId)}/messages`;
+  return `${basePath}/me/mailFolders/${
+    encodeGraphPathSegment(folderId)
+  }/messages`;
 }
 
 function assertSafeGraphPageUrl(
@@ -665,7 +886,9 @@ function assertSafeGraphPageUrl(
   if (parsed.pathname !== buildGraphFolderMessagesPath(config, folderId)) {
     throw new InvalidWebMailPageCursorError("分页游标路径无效。");
   }
-  if (!parsed.searchParams.has("$skiptoken") && !parsed.searchParams.has("$skip")) {
+  if (
+    !parsed.searchParams.has("$skiptoken") && !parsed.searchParams.has("$skip")
+  ) {
     throw new InvalidWebMailPageCursorError("分页游标缺少分页参数。");
   }
   return parsed.toString();
@@ -685,7 +908,9 @@ export function decodeWebMailPageCursor(
   if (!cursor.startsWith(WEB_PAGE_CURSOR_PREFIX)) {
     throw new InvalidWebMailPageCursorError("分页游标前缀无效。");
   }
-  const decoded = decodeOpaqueCursor(cursor.slice(WEB_PAGE_CURSOR_PREFIX.length));
+  const decoded = decodeOpaqueCursor(
+    cursor.slice(WEB_PAGE_CURSOR_PREFIX.length),
+  );
   if (!decoded) {
     throw new InvalidWebMailPageCursorError("分页游标无法解码。");
   }
@@ -701,6 +926,19 @@ function requireResolvedFolder(
     throw new Error(`Mail folder not found: ${kind}`);
   }
   return folder;
+}
+
+function connectionChanged(
+  previous: MailboxConnection,
+  next: MailboxConnection,
+): boolean {
+  return previous.encryptedRefreshToken !== next.encryptedRefreshToken ||
+    previous.accessTokenExpiresAt !== next.accessTokenExpiresAt ||
+    previous.inboxFolderId !== next.inboxFolderId ||
+    previous.junkFolderId !== next.junkFolderId ||
+    previous.status !== next.status ||
+    previous.lastError !== next.lastError ||
+    previous.updatedAt !== next.updatedAt;
 }
 
 async function getGraphMailboxAccessForRead(
@@ -736,7 +974,11 @@ async function getGraphMailboxAccessForRead(
     ...bundle,
     connection,
   };
-  await saveMailboxBundle(kv, nextBundle);
+  // 同一个边缘实例内会复用 access token。仅在 token、文件夹或状态真正变化时写 KV，
+  // 避免每次切换邮件都产生一次远程 KV 写入。
+  if (connectionChanged(bundle.connection, connection)) {
+    await saveMailboxBundle(kv, nextBundle);
+  }
 
   return {
     kv,
@@ -770,7 +1012,10 @@ export async function loadMailboxWebView(input: {
     input.mailboxId,
     input.fetchImpl,
   );
-  const folder = requireResolvedFolder(folders, resolveFolderKind(input.folderKind));
+  const folder = requireResolvedFolder(
+    folders,
+    resolveFolderKind(input.folderKind),
+  );
   const pageUrl = input.pageCursor
     ? decodeWebMailPageCursor(input.pageCursor, config, folder.folderId)
     : undefined;
@@ -784,13 +1029,19 @@ export async function loadMailboxWebView(input: {
 
   let selectedMessage: MailMessageSummary | null = null;
   if (input.messageId) {
-    const baseMessage = page.messages.find((message) => message.messageId === input.messageId) ?? {
+    const baseMessage = page.messages.find((message) =>
+      message.messageId === input.messageId
+    ) ?? {
       messageId: input.messageId,
       subject: "(loading)",
       folderKind: folder.kind,
       folderName: folder.folderName,
     };
-    selectedMessage = await enrichGraphMessage(graph, baseMessage, WEB_INLINE_IMAGE_LIMIT);
+    selectedMessage = await enrichGraphMessage(
+      graph,
+      baseMessage,
+      WEB_INLINE_IMAGE_LIMIT,
+    );
   }
 
   return {
@@ -810,19 +1061,38 @@ export async function listMailboxMessagesForWeb(input: {
   limit?: number;
   pageCursor?: string | null;
   fetchImpl?: typeof fetch;
-}): Promise<{
-  bundle: MailboxBundle;
-  folder: { kind: MailFolderKind; folderId: string; folderName: string };
-  messages: MailMessageSummary[];
-  nextPageCursor?: string;
-}> {
+  forceRefresh?: boolean;
+}): Promise<WebListResult> {
+  const folderKind = resolveFolderKind(input.folderKind);
+  const cacheKey = JSON.stringify([
+    input.mailboxId,
+    folderKind,
+    input.limit ?? WEB_MESSAGE_LIST_LIMIT,
+    input.pageCursor ?? "",
+  ]);
+  const useRuntimeCache = (input.fetchImpl ?? fetch) === fetch;
+  if (useRuntimeCache && !input.forceRefresh) {
+    const cached = readTimedCache(webListCache, cacheKey);
+    if (cached) return cached;
+  }
+
   const page = await loadMailboxWebView(input);
-  return {
+  const result: WebListResult = {
     bundle: page.bundle,
     folder: page.folder,
     messages: page.messages,
     nextPageCursor: page.nextPageCursor,
   };
+  if (useRuntimeCache) {
+    writeTimedCache(
+      webListCache,
+      cacheKey,
+      result,
+      WEB_LIST_CACHE_TTL_MS,
+      WEB_LIST_CACHE_MAX,
+    );
+  }
+  return result;
 }
 
 export async function getMailboxMessageForWeb(input: {
@@ -830,16 +1100,19 @@ export async function getMailboxMessageForWeb(input: {
   messageId: string;
   folderKind?: MailFolderKind | string;
   fetchImpl?: typeof fetch;
-}): Promise<{
-  bundle: MailboxBundle;
-  folderKind: MailFolderKind;
-  message: MailMessageSummary;
-}> {
+}): Promise<WebDetailResult> {
+  const folderKind = resolveFolderKind(input.folderKind);
+  const cacheKey = `${input.mailboxId}:${folderKind}:${input.messageId}`;
+  const useRuntimeCache = (input.fetchImpl ?? fetch) === fetch;
+  if (useRuntimeCache) {
+    const cached = readTimedCache(webDetailCache, cacheKey);
+    if (cached) return cached;
+  }
+
   const { bundle, graph } = await getGraphMailboxAccessForRead(
     input.mailboxId,
     input.fetchImpl,
   );
-  const folderKind = resolveFolderKind(input.folderKind);
   const message = await enrichGraphMessage(
     graph,
     {
@@ -851,26 +1124,37 @@ export async function getMailboxMessageForWeb(input: {
     WEB_INLINE_IMAGE_LIMIT,
   );
 
-  return {
+  const result: WebDetailResult = {
     bundle,
     folderKind,
     message,
   };
+  if (useRuntimeCache) {
+    writeTimedCache(
+      webDetailCache,
+      cacheKey,
+      result,
+      WEB_DETAIL_CACHE_TTL_MS,
+      WEB_DETAIL_CACHE_MAX,
+    );
+  }
+  return result;
 }
 
 export async function updateMailboxRoute(input: {
   teamId: string;
   mailbox: string;
-  channelId: string;
-  channelName?: string;
+  chatId: string;
+  chatName?: string;
 }): Promise<MailboxBundle> {
   const kv = await getKv();
   const bundle = await resolveMailboxBundle(kv, input.teamId, input.mailbox);
   if (!bundle) throw new Error("Mailbox not found");
   const route: MailboxRoute = {
     mailboxId: bundle.connection.mailboxId,
-    slackChannelId: input.channelId,
-    slackChannelName: input.channelName,
+    platform: "lark",
+    chatId: input.chatId,
+    chatName: input.chatName,
     updatedAt: nowIso(),
   };
   await saveMailboxRoute(kv, route);
@@ -907,7 +1191,10 @@ export async function updateMailboxProvider(input: {
         await graph.deleteSubscription(bundle.lease.subscriptionId);
       }
     } catch (error) {
-      console.error("Failed to delete Graph subscription during provider switch", error);
+      console.error(
+        "Failed to delete Graph subscription during provider switch",
+        error,
+      );
     }
 
     const syncState = await buildMsOauth2ApiBaselineState(kv, {
@@ -954,8 +1241,16 @@ export async function updateMailboxProvider(input: {
     graphContext.graph,
     graphContext.connection,
   );
-  const baselines = await collectGraphFolderDeltas(graphContext.graph, folders, null);
-  const syncState = buildGraphSyncState(connection.mailboxId, bundle.syncState, baselines);
+  const baselines = await collectGraphFolderDeltas(
+    graphContext.graph,
+    folders,
+    null,
+  );
+  const syncState = buildGraphSyncState(
+    connection.mailboxId,
+    bundle.syncState,
+    baselines,
+  );
   const lease = await createSubscriptionForMailbox(
     graphContext.graph,
     config,
@@ -1003,35 +1298,19 @@ async function sendMailNotification(
   maxPreviewChars: number,
 ): Promise<void> {
   if (!mailbox.route) throw new Error("Mailbox route is not configured");
-  const text =
-    `📬 [${formatFolderLabel(message.folderKind, message.folderName)}] ${message.subject || "(no subject)"} — ${message.fromName || message.fromAddress || "Unknown sender"}`;
-  const blocks = buildMailNotificationBlocks(mailbox, message, maxPreviewChars);
-  const posted = await postChannelMessage(mailbox.route.slackChannelId, text, blocks);
-  const threadTs = posted.ts;
-  if (!threadTs || !message.inlineImages?.length) return;
-
-  for (const image of message.inlineImages.slice(0, MAX_INLINE_IMAGE_UPLOADS)) {
-    try {
-      await uploadInlineImageToSlack({
-        channel: mailbox.route.slackChannelId,
-        threadTs,
-        image,
-      });
-    } catch (error) {
-      if (error instanceof SlackApiError) {
-        console.error("Failed to upload inline image to Slack", {
-          error: error.message,
-          body: error.body,
-          mailboxId: mailbox.connection.mailboxId,
-          messageId: message.messageId,
-          attachmentId: image.attachmentId,
-        });
-        break;
-      }
-      console.error("Failed to upload inline image to Slack", error);
-      break;
-    }
+  if (mailbox.route.platform !== "lark") {
+    throw new Error(
+      "Mailbox route has not been migrated to Lark; run `mail claim <mailbox>` in the target group",
+    );
   }
+
+  await postLarkCard({
+    chatId: mailbox.route.chatId,
+    card: buildLarkMailNotificationCard(mailbox, message, maxPreviewChars),
+    idempotencyKey: `${mailbox.connection.mailboxId}:${
+      buildDedupeKey(mailbox.connection.mailboxId, message)
+    }`,
+  });
 }
 
 async function loadInlineImagesForGraphMessage(
@@ -1043,9 +1322,9 @@ async function loadInlineImagesForGraphMessage(
     .filter((attachment) =>
       Boolean(
         attachment.attachmentId &&
-        attachment.isInline &&
-        attachment.contentType?.startsWith("image/") &&
-        (!attachment.size || attachment.size <= MAX_INLINE_IMAGE_BYTES),
+          attachment.isInline &&
+          attachment.contentType?.startsWith("image/") &&
+          (!attachment.size || attachment.size <= MAX_INLINE_IMAGE_BYTES),
       )
     )
     .slice(0, Math.max(0, maxItems));
@@ -1075,7 +1354,11 @@ function shouldLoadInlineImagesForMessage(
   inlineImageLimit: number,
 ): boolean {
   if (inlineImageLimit <= 0) return false;
-  if (!message.attachments?.some((attachment) => attachment.isInline && attachment.contentType?.startsWith("image/"))) {
+  if (
+    !message.attachments?.some((attachment) =>
+      attachment.isInline && attachment.contentType?.startsWith("image/")
+    )
+  ) {
     return false;
   }
   if (message.bodyContentType !== "html") return false;
@@ -1094,13 +1377,14 @@ async function enrichGraphMessage(
     folderKind: message.folderKind,
     folderName: message.folderName,
   };
-  const inlineImages = shouldLoadInlineImagesForMessage(merged, inlineImageLimit)
-    ? await loadInlineImagesForGraphMessage(
-      graph,
-      merged,
-      inlineImageLimit,
-    )
-    : [];
+  const inlineImages =
+    shouldLoadInlineImagesForMessage(merged, inlineImageLimit)
+      ? await loadInlineImagesForGraphMessage(
+        graph,
+        merged,
+        inlineImageLimit,
+      )
+      : [];
   return {
     ...merged,
     inlineImages,
@@ -1112,9 +1396,14 @@ async function enrichGraphMessageForNotification(
   message: MailMessageSummary,
 ): Promise<MailMessageSummary> {
   try {
-    return await enrichGraphMessage(graph, message, MAX_INLINE_IMAGE_UPLOADS);
+    // Lark 首版通知只发送正文摘要和附件元数据，不上传邮件内联图片。
+    return await enrichGraphMessage(graph, message, 0);
   } catch (error) {
-    console.error("Failed to enrich Graph message detail", message.messageId, error);
+    console.error(
+      "Failed to enrich Graph message detail",
+      message.messageId,
+      error,
+    );
     return message;
   }
 }
@@ -1160,11 +1449,16 @@ async function syncGraphMailbox(
         return delta.messages;
       })
       .sort((left, right) =>
-        (left.receivedDateTime ?? "").localeCompare(right.receivedDateTime ?? "")
+        (left.receivedDateTime ?? "").localeCompare(
+          right.receivedDateTime ?? "",
+        )
       );
 
     for (const message of deliverableMessages) {
-      const initialDedupeKey = buildDedupeKey(bundle.connection.mailboxId, message);
+      const initialDedupeKey = buildDedupeKey(
+        bundle.connection.mailboxId,
+        message,
+      );
       const alreadyDelivered = await hasDeliveredRecord(
         kv,
         bundle.connection.mailboxId,
@@ -1178,7 +1472,10 @@ async function syncGraphMailbox(
         graphContext.graph,
         message,
       );
-      const dedupeKey = buildDedupeKey(bundle.connection.mailboxId, enrichedMessage);
+      const dedupeKey = buildDedupeKey(
+        bundle.connection.mailboxId,
+        enrichedMessage,
+      );
       if (dedupeKey !== initialDedupeKey) {
         const deliveredAfterEnrich = await hasDeliveredRecord(
           kv,
@@ -1190,14 +1487,18 @@ async function syncGraphMailbox(
           continue;
         }
       }
-      await sendMailNotification(workingBundle, enrichedMessage, config.mailPreviewMaxChars);
+      await sendMailNotification(
+        workingBundle,
+        enrichedMessage,
+        config.mailPreviewMaxChars,
+      );
       await saveDeliveredRecord(kv, {
         mailboxId: bundle.connection.mailboxId,
         dedupeKey,
         messageId: enrichedMessage.messageId,
         internetMessageId: enrichedMessage.internetMessageId,
         subject: enrichedMessage.subject,
-        slackChannelId: bundle.route?.slackChannelId ?? "",
+        deliveryChatId: workingBundle.route?.chatId ?? "",
         deliveredAt: nowIso(),
       });
       delivered++;
@@ -1217,16 +1518,19 @@ async function syncGraphMailbox(
         : workingBundle.lease,
     };
     await saveMailboxBundle(kv, nextBundle);
-    if (!nextBundle.lease?.subscriptionId ||
-      nextBundle.lease.resource !== buildLeaseResource(nextBundle.connection)) {
+    if (
+      !nextBundle.lease?.subscriptionId ||
+      nextBundle.lease.resource !== buildLeaseResource(nextBundle.connection)
+    ) {
       await ensureSubscriptionForBundle(nextBundle, fetchImpl);
     }
 
     return { delivered, skipped };
   } catch (error) {
-    const kind = error instanceof GraphApiError && [401, 403].includes(error.status)
-      ? "connection"
-      : "sync";
+    const kind =
+      error instanceof GraphApiError && [401, 403].includes(error.status)
+        ? "connection"
+        : "sync";
     await updateBundleWithError(workingBundle, error, kind);
     throw error;
   }
@@ -1266,20 +1570,31 @@ async function syncMsOauth2ApiMailbox(
     let skipped = 0;
     for (const message of messages) {
       const dedupeKey = buildDedupeKey(connection.mailboxId, message);
-      const alreadyDelivered = await hasDeliveredRecord(kv, connection.mailboxId, dedupeKey);
-      if (alreadyDelivered || isHistoricalMessage(bundle.syncState?.lastMessageReceivedAt, message)) {
+      const alreadyDelivered = await hasDeliveredRecord(
+        kv,
+        connection.mailboxId,
+        dedupeKey,
+      );
+      if (
+        alreadyDelivered ||
+        isHistoricalMessage(bundle.syncState?.lastMessageReceivedAt, message)
+      ) {
         skipped++;
         continue;
       }
 
-      await sendMailNotification(workingBundle, message, config.mailPreviewMaxChars);
+      await sendMailNotification(
+        workingBundle,
+        message,
+        config.mailPreviewMaxChars,
+      );
       await saveDeliveredRecord(kv, {
         mailboxId: connection.mailboxId,
         dedupeKey,
         messageId: message.messageId,
         internetMessageId: message.internetMessageId,
         subject: message.subject,
-        slackChannelId: bundle.route?.slackChannelId ?? "",
+        deliveryChatId: workingBundle.route?.chatId ?? "",
         deliveredAt: nowIso(),
       });
       delivered++;
@@ -1315,9 +1630,10 @@ async function syncMsOauth2ApiMailbox(
 
     return { delivered, skipped };
   } catch (error) {
-    const kind = error instanceof MsOauth2ApiError && [401, 403].includes(error.status)
-      ? "connection"
-      : "sync";
+    const kind =
+      error instanceof MsOauth2ApiError && [401, 403].includes(error.status)
+        ? "connection"
+        : "sync";
     await updateBundleWithError(workingBundle, error, kind);
     throw error;
   }
@@ -1377,14 +1693,17 @@ async function ensureSubscriptionForBundle(
     ...bundle,
     connection: graphContext.connection,
   };
-  const renewalWindowMs = config.graphSubscriptionRenewalWindowMinutes * 60 * 1000;
+  const renewalWindowMs = config.graphSubscriptionRenewalWindowMinutes * 60 *
+    1000;
   const expectedResource = buildLeaseResource(baseBundle.connection);
   const requiresRecreate = bundle.lease?.resource !== expectedResource;
   const requiresRenew = !bundle.lease?.subscriptionId ||
     requiresRecreate ||
     isExpired(bundle.lease.expiresAt, renewalWindowMs);
   if (!requiresRenew) {
-    await persistBundle(baseBundle);
+    if (connectionChanged(bundle.connection, baseBundle.connection)) {
+      await persistBundle(baseBundle);
+    }
     return;
   }
 
@@ -1392,7 +1711,9 @@ async function ensureSubscriptionForBundle(
     const nextExpiry = subscriptionExpiry(config);
     if (requiresRecreate && bundle.lease?.subscriptionId) {
       try {
-        await graphContext.graph.deleteSubscription(bundle.lease.subscriptionId);
+        await graphContext.graph.deleteSubscription(
+          bundle.lease.subscriptionId,
+        );
       } catch (error) {
         const graphError = error instanceof GraphApiError ? error : null;
         if (!graphError || ![404, 410].includes(graphError.status)) {
@@ -1401,7 +1722,10 @@ async function ensureSubscriptionForBundle(
       }
     }
     const renewed = bundle.lease?.subscriptionId && !requiresRecreate
-      ? await graphContext.graph.renewSubscription(bundle.lease.subscriptionId, nextExpiry)
+      ? await graphContext.graph.renewSubscription(
+        bundle.lease.subscriptionId,
+        nextExpiry,
+      )
       : await graphContext.graph.createSubscription({
         resource: expectedResource,
         notificationUrl: buildNotificationUrl(config),
@@ -1442,20 +1766,18 @@ async function ensureSubscriptionForBundle(
   }
 }
 
-async function enqueueMaintenanceSyncs(): Promise<void> {
+async function enqueueMaintenanceSyncs(
+  bundles: MailboxBundle[],
+): Promise<void> {
   const config = await getConfigAsync();
   const kv = await getKv();
-  for await (const entry of kv.list<string>({ prefix: ["mailbox_email"] })) {
-    const mailboxId = entry.value;
-    if (!mailboxId) continue;
-    const bundle = await getMailboxBundle(kv, mailboxId);
-    if (!bundle) continue;
+  for (const bundle of bundles) {
     const lastSyncAgeMs = bundle.syncState?.lastSyncAt
       ? Date.now() - new Date(bundle.syncState.lastSyncAt).getTime()
       : Number.POSITIVE_INFINITY;
     if (lastSyncAgeMs >= config.mailSyncPollIntervalMinutes * 60 * 1000) {
       await enqueueSyncJob(kv, {
-        mailboxId,
+        mailboxId: bundle.connection.mailboxId,
         reason: "maintenance_poll",
       });
     }
@@ -1464,30 +1786,25 @@ async function enqueueMaintenanceSyncs(): Promise<void> {
 
 export async function renewExpiringSubscriptions(
   fetchImpl: typeof fetch = fetch,
+  existingBundles?: MailboxBundle[],
 ): Promise<void> {
   const kv = await getKv();
-  const bundles = await Promise.all(
-    (await listSyncTargets()).map((mailboxId) => getMailboxBundle(kv, mailboxId)),
-  );
+  const bundles = existingBundles ?? await listAllMailboxBundles(kv);
   for (const bundle of bundles) {
-    if (!bundle || bundle.connection.providerType === "ms_oauth2api") continue;
+    if (bundle.connection.providerType === "ms_oauth2api") continue;
     await ensureSubscriptionForBundle(bundle, fetchImpl);
   }
 }
 
-async function listSyncTargets(): Promise<string[]> {
+export async function runMaintenance(
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
   const kv = await getKv();
-  const mailboxIds: string[] = [];
-  for await (const entry of kv.list<string>({ prefix: ["mailbox_email"] })) {
-    if (entry.value) mailboxIds.push(entry.value);
-  }
-  return mailboxIds;
-}
-
-export async function runMaintenance(fetchImpl: typeof fetch = fetch): Promise<void> {
-  await enqueueMaintenanceSyncs();
-  await renewExpiringSubscriptions(fetchImpl);
+  const bundles = await listAllMailboxBundles(kv);
+  await enqueueMaintenanceSyncs(bundles);
+  await renewExpiringSubscriptions(fetchImpl, bundles);
   await processQueuedSyncs(10, fetchImpl);
+  await pruneExpiredState(200);
 }
 
 export async function sendTestNotification(input: {
@@ -1501,11 +1818,11 @@ export async function sendTestNotification(input: {
   if (!bundle.route) throw new Error("Mailbox route is not configured");
   await sendMailNotification(bundle, {
     messageId: crypto.randomUUID(),
-    subject: "Test notification from Slack Outlook Mail Bot",
+    subject: "Test notification from Lark Outlook Mail Bot",
     fromName: bundle.connection.displayName,
     fromAddress: bundle.connection.emailAddress,
     bodyPreview: toPreviewText(
-      `This is a test notification for ${bundle.connection.emailAddress}. New emails for this mailbox will be delivered here.`,
+      `This is a test notification for ${bundle.connection.emailAddress}. New emails for this mailbox will be delivered to this Lark chat.`,
       config.mailPreviewMaxChars,
     ),
     receivedDateTime: nowIso(),
@@ -1528,11 +1845,18 @@ export async function disconnectMailbox(input: {
   try {
     if (bundle.lease?.subscriptionId) {
       const config = await getConfigAsync();
-      const { graph } = await ensureGraphContext(bundle, config, input.fetchImpl ?? fetch);
+      const { graph } = await ensureGraphContext(
+        bundle,
+        config,
+        input.fetchImpl ?? fetch,
+      );
       await graph.deleteSubscription(bundle.lease.subscriptionId);
     }
   } catch (error) {
-    console.error("Failed to delete Graph subscription during disconnect", error);
+    console.error(
+      "Failed to delete Graph subscription during disconnect",
+      error,
+    );
   }
 
   await deleteMailbox(kv, bundle.connection.mailboxId);
@@ -1552,7 +1876,10 @@ export async function processGraphNotifications(
       ignored++;
       continue;
     }
-    const mailboxId = await getMailboxIdBySubscription(kv, notification.subscriptionId);
+    const mailboxId = await getMailboxIdBySubscription(
+      kv,
+      notification.subscriptionId,
+    );
     if (!mailboxId) {
       ignored++;
       continue;

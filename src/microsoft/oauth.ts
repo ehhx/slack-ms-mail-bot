@@ -46,7 +46,11 @@ async function exchangeTokenForm(
 
   const raw = await response.text();
   if (!response.ok) {
-    throw new Error(`Microsoft token exchange failed: ${response.status} ${raw.slice(0, 300)}`);
+    throw new Error(
+      `Microsoft token exchange failed: ${response.status} ${
+        raw.slice(0, 300)
+      }`,
+    );
   }
 
   const data = JSON.parse(raw) as {

@@ -13,16 +13,12 @@ import {
 } from "./auth.ts";
 import {
   buildMessageDetail,
-  buildWebConsoleState,
   toWebMailboxSummary,
   toWebMessageDetail,
   toWebMessageSummary,
 } from "./service.ts";
-import {
-  renderAppPage,
-  renderLoginPage,
-  renderReaderContentFragment,
-} from "./ui.ts";
+import { WEB_APP_CSS, WEB_APP_JS } from "./assets.ts";
+import { renderAppPage, renderLoginPage } from "./ui.ts";
 
 function redirect(location: string, headers?: HeadersInit): Response {
   return new Response(null, {
@@ -37,7 +33,24 @@ function redirect(location: string, headers?: HeadersInit): Response {
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "private, no-store",
+    },
+  });
+}
+
+function staticAssetResponse(
+  body: string,
+  contentType: string,
+): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": contentType,
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+    },
   });
 }
 
@@ -62,6 +75,13 @@ export async function handleWebRequest(
   }
   if (url.pathname === "/app/login/") {
     return redirect("/app/login");
+  }
+
+  if (request.method === "GET" && url.pathname === "/app/assets/app.css") {
+    return staticAssetResponse(WEB_APP_CSS, "text/css; charset=utf-8");
+  }
+  if (request.method === "GET" && url.pathname === "/app/assets/app.js") {
+    return staticAssetResponse(WEB_APP_JS, "text/javascript; charset=utf-8");
   }
 
   const config = await getConfigAsync();
@@ -120,39 +140,7 @@ export async function handleWebRequest(
   }
 
   if (url.pathname === "/app" && request.method === "GET") {
-    const state = await buildWebConsoleState({
-      mailboxId: url.searchParams.get("mailbox"),
-      folder: url.searchParams.get("folder"),
-      messageId: url.searchParams.get("message"),
-      pageCursor: url.searchParams.get("pageCursor"),
-      page: url.searchParams.get("page"),
-    });
-    return renderAppPage(state);
-  }
-
-  if (url.pathname === "/app/reader-fragment" && request.method === "GET") {
-    const mailboxId = url.searchParams.get("mailbox");
-    const messageId = url.searchParams.get("message");
-    if (!mailboxId || !messageId) {
-      return new Response("Missing mailbox or message", { status: 400 });
-    }
-
-    try {
-      const detail = await getMailboxMessageForWeb({
-        mailboxId,
-        messageId,
-        folderKind: url.searchParams.get("folder") ?? "inbox",
-      });
-      return renderReaderContentFragment(buildMessageDetail(detail.message));
-    } catch (error) {
-      return new Response(
-        error instanceof Error ? error.message : String(error),
-        {
-          status: 400,
-          headers: { "content-type": "text/plain; charset=utf-8" },
-        },
-      );
-    }
+    return renderAppPage();
   }
 
   if (url.pathname === "/api/mailboxes" && request.method === "GET") {
@@ -174,6 +162,7 @@ export async function handleWebRequest(
         mailboxId,
         folderKind: url.searchParams.get("folder") ?? "inbox",
         pageCursor: url.searchParams.get("pageCursor"),
+        forceRefresh: url.searchParams.get("fresh") === "1",
       });
       return jsonResponse({
         mailbox: toWebMailboxSummary(page.bundle),

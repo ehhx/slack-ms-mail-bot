@@ -242,7 +242,11 @@ function formatProvider(
 }
 
 export function mailboxStatusLine(bundle: MailboxBundle): string {
-  const route = bundle.route ? `<#${bundle.route.slackChannelId}>` : "未配置";
+  const route = !bundle.route
+    ? "未配置"
+    : bundle.route.platform === "lark"
+    ? (bundle.route.chatName || bundle.route.chatId)
+    : "等待迁移到 Lark";
   const lastSync = bundle.syncState?.lastSyncAt ?? "never";
   const pollingOnly = bundle.connection.providerType === "ms_oauth2api";
   const lease = pollingOnly

@@ -31,7 +31,9 @@ function sampleBundle(): MailboxBundle {
     },
     route: {
       mailboxId: "mailbox-1",
-      slackChannelId: "C1",
+      platform: "lark",
+      chatId: "oc_chat_1",
+      chatName: "Mail alerts",
       updatedAt: new Date().toISOString(),
     },
     syncState: {
@@ -88,14 +90,14 @@ Deno.test("mailbox repository saves and resolves bundles", async () => {
     dedupeKey: "dedupe-1",
     messageId: "msg-1",
     subject: "Hello",
-    slackChannelId: "C1",
+    deliveryChatId: "oc_chat_1",
     deliveredAt: new Date().toISOString(),
   });
   assertEquals(await hasDeliveredRecord(kv, "mailbox-1", "dedupe-1"), true);
 
   const fetched = await getMailboxBundle(kv, "mailbox-1");
   assert(fetched);
-  assertEquals(fetched.route?.slackChannelId, "C1");
+  assertEquals(fetched.route?.chatId, "oc_chat_1");
 
   await deleteMailbox(kv, "mailbox-1");
   assertEquals(await getMailboxBundle(kv, "mailbox-1"), null);
